@@ -4,12 +4,13 @@
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleDisplayName</key><string>YeeX</string>
+    <key>CFBundleIconFile</key><string>YeeX.icns</string>
     <key>CFBundleName</key><string>YeeX</string>
     <key>CFBundleExecutable</key><string>YeeX</string>
     <key>CFBundleIdentifier</key><string>com.tanaga9.yeex</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>3</string>
     <key>LSMinimumSystemVersion</key><string>26.0</string>
     <key>LSArchitecturePriority</key><array><string>arm64</string></array>
     <key>NSHighResolutionCapable</key><true/>

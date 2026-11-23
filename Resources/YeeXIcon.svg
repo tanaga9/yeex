@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#30594e"/>
+      <stop offset=".48" stop-color="#183b37"/>
+      <stop offset="1" stop-color="#112521"/>
+    </linearGradient>
+    <linearGradient id="husk" x1=".15" y1="0" x2=".78" y2="1">
+      <stop stop-color="#c1e97a"/>
+      <stop offset=".42" stop-color="#83bc4a"/>
+      <stop offset="1" stop-color="#387044"/>
+    </linearGradient>
+    <linearGradient id="rim" x1=".3" y1="0" x2=".65" y2="1">
+      <stop stop-color="#fff3cd"/>
+      <stop offset="1" stop-color="#e3b47d"/>
+    </linearGradient>
+    <linearGradient id="straw" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#fffef2"/>
+      <stop offset="1" stop-color="#b7d8d3"/>
+    </linearGradient>
+    <clipPath id="straw-occlusion">
+      <path d="M0 0H1024V325H629A117 42 0 0 1 395 325H0Z"/>
+    </clipPath>
+  </defs>
+
+  <rect x="100" y="115" width="824" height="824" rx="196" fill="#0e2521" opacity=".22"/>
+  <rect x="100" y="100" width="824" height="824" rx="196" fill="url(#background)"/>
+  <rect x="104" y="104" width="816" height="816" rx="192" fill="none" stroke="#bcdec2" stroke-opacity=".22" stroke-width="8"/>
+
+  <ellipse cx="512" cy="878" rx="202" ry="25" fill="#0c251e" opacity=".68"/>
+  <g transform="translate(-51 -292) scale(1.10 1.49)">
+    <path d="M255 462H769C798 499 807 541 805 586C799 705 686 792 511 792C338 792 225 705 219 586C217 540 227 497 255 462Z" fill="url(#husk)"/>
+    <path d="M585 505C635 560 655 608 648 657C641 711 610 756 559 790C706 775 800 691 805 586C807 541 798 499 769 462Z" fill="#356c39" opacity=".48"/>
+    <path d="M291 531C263 625 317 719 430 766C353 706 331 618 355 557Z" fill="#d6ee85" opacity=".35"/>
+    <path d="M255 462L349 388C407 342 615 342 675 388L769 462C750 529 686 557 624 532C582 590 520 602 459 551C383 595 305 566 255 462Z" fill="url(#rim)"/>
+    <ellipse cx="512" cy="413" rx="132" ry="41" fill="#fff0cb"/>
+    <ellipse cx="512" cy="414" rx="106" ry="28" fill="#855e41"/>
+  </g>
+  <g clip-path="url(#straw-occlusion)">
+    <path d="M515 381L604 205C608 198 615 192 623 189L737 155" fill="none" stroke="#315d55" stroke-width="51" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M515 376L604 200C608 193 615 187 623 184L737 150" fill="none" stroke="url(#straw)" stroke-width="39" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
