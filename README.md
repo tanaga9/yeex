@@ -19,6 +19,18 @@ open -a "$PWD/dist/YeeX.app" /path/to/images
 
 The build script ad hoc signs `YeeX.app` for local testing. If a restricted shell cannot reach the macOS desktop session, launch the app from Finder or a regular Terminal window.
 
+## Publish a release
+
+In GitHub Actions, open **Release YeeX** and choose **Run workflow** from the default branch. Enter a version such as `0.1.0` and the full SHA of the commit to release. You can also run the workflow from the repository with GitHub CLI, which prompts for both inputs.
+
+```sh
+gh workflow run release.yml
+```
+
+The workflow tests the selected commit on Apple Silicon, sets the requested version in its temporary checkout, and verifies the signed app inside the ZIP. It then creates the matching Git tag and publishes the ZIP with generated release notes. An existing release or draft for that version, or a tag pointing at a different commit, stops publication. If a canceled run leaves a draft, remove that draft before retrying. The app is ad hoc signed and is not notarized.
+
+GitHub may require Workflows write permission when creating a tag for an older commit. To support those commits, set the repository Actions secret `YEEX_RELEASE_TAG_TOKEN` to a fine-grained token scoped to this repository with **Contents** and **Workflows** read/write permissions. The workflow uses this token for tag creation.
+
 ## Controls
 
 | Action | Shortcut or control |

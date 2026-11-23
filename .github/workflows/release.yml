@@ -1,0 +1,137 @@
+name: Release YeeX
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (for example 0.1.0)
+        required: true
+        type: string
+      commit:
+        description: Full commit SHA to build and release
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Validate release inputs
+        id: release
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "Run the release workflow from the default branch."
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Enter a release version such as 0.1.0."
+            exit 1
+          fi
+          if [[ ! "$COMMIT" =~ ^[[:xdigit:]]{40}$ ]]; then
+            echo "Enter a full 40-character commit SHA."
+            exit 1
+          fi
+          printf 'commit=%s\n' "$(printf '%s' "$COMMIT" | tr 'A-F' 'a-f')" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the selected commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs.commit }}
+          persist-credentials: false
+
+      - name: Verify the commit and run tests
+        shell: bash
+        env:
+          COMMIT: ${{ steps.release.outputs.commit }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          Scripts/test.sh --no-parallel
+
+      - name: Version, build, and verify the distribution ZIP
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          plutil -replace CFBundleShortVersionString -string "$VERSION" Resources/Info.plist
+          Scripts/build-app.sh
+          archive="dist/YeeX-${VERSION}-macOS-arm64.zip"
+          ditto -c -k --keepParent dist/YeeX.app "$archive"
+
+          unpacked="$(mktemp -d)"
+          trap 'rm -rf "$unpacked"' EXIT
+          ditto -x -k "$archive" "$unpacked"
+          app="$unpacked/YeeX.app"
+          test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "$VERSION"
+          test "$(xcrun lipo -archs "$app/Contents/MacOS/YeeX")" = arm64
+          codesign --verify --strict "$app"
+
+      - name: Pass the verified ZIP to the publish job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: yeex-release
+          path: dist/YeeX-${{ inputs.version }}-macOS-arm64.zip
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified ZIP
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: yeex-release
+
+      - name: Tag and publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_TOKEN: ${{ secrets.YEEX_RELEASE_TAG_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          repo="$GITHUB_REPOSITORY"
+          commit="$(printf '%s' "$COMMIT" | tr 'A-F' 'a-f')"
+          tag="v$VERSION"
+          ref="refs/tags/$tag"
+          archive="YeeX-${VERSION}-macOS-arm64.zip"
+          test -s "$archive"
+
+          existing_release="$(gh api --paginate "repos/$repo/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$tag\") | .id")"
+          if [[ -n "$existing_release" ]]; then
+            echo "A release or draft already exists for $tag."
+            exit 1
+          fi
+
+          existing_ref="$(gh api "repos/$repo/git/matching-refs/tags/$tag" \
+            --jq ".[] | select(.ref == \"$ref\") | .ref")"
+          if [[ -z "$existing_ref" ]]; then
+            if ! GH_TOKEN="${TAG_TOKEN:-$GH_TOKEN}" gh api --method POST "repos/$repo/git/refs" \
+              -f ref="$ref" -f sha="$commit" >/dev/null; then
+              echo "Could not create the tag. If GitHub requires Workflows permission, configure YEEX_RELEASE_TAG_TOKEN."
+              exit 1
+            fi
+          elif [[ "$(gh api "repos/$repo/commits/$ref" --jq .sha)" != "$commit" ]]; then
+            echo "The existing tag does not match the selected commit."
+            exit 1
+          fi
+
+          gh release create "$tag" "$archive" --repo "$repo" --verify-tag \
+            --title "YeeX $VERSION" --generate-notes
