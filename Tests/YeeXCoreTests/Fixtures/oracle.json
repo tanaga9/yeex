@@ -1,0 +1,80 @@
+{
+  "metadata-jpeg.webp": {
+    "format": "jpeg",
+    "raw": {
+      "UserComment": "A photo of a cat\nNegative prompt: blur\nSteps: 20, Seed: 42",
+      "ImageDescription": "Photo ①\nSteps: 20",
+      "parameters": "A photo of a cat\nNegative prompt: blur\nSteps: 20, Seed: 42"
+    },
+    "fields": {
+      "parameters_raw": "A photo of a cat\nNegative prompt: blur\nSteps: 20, Seed: 42",
+      "parameters": "A photo of a cat\nNegative prompt: blur\nSteps: 20, Seed: 42"
+    }
+  },
+  "metadata-png.JPG": {
+    "format": "png",
+    "raw": {
+      "parameters": "A photo of a cat\nNegative prompt: blur\nSteps: 20, Seed: 42",
+      "Comment": "Café"
+    },
+    "fields": {
+      "parameters_raw": "A photo of a cat\nNegative prompt: blur\nSteps: 20, Seed: 42",
+      "parameters": "A photo of a cat\nNegative prompt: blur\nSteps: 20, Seed: 42"
+    }
+  },
+  "metadata-webp.png": {
+    "format": "webp",
+    "raw": {
+      "prompt": "{\"1\": {\"class_type\": \"KSampler\", \"inputs\": {\"positive\": [\"2\", 0], \"negative\": [\"3\", 0], \"seed\": 42, \"steps\": 20}}, \"2\": {\"class_type\": \"CLIPTextEncode\", \"inputs\": {\"text\": \"A photo of a cat\"}}, \"3\": {\"class_type\": \"CLIPTextEncodeSDXL\", \"inputs\": {\"text_g\": \"bad\", \"text_l\": \"blur\"}}}",
+      "workflow": "{\"nodes\":[]}"
+    },
+    "fields": {
+      "prompt": "A photo of a cat",
+      "prompt_json": {
+        "1": {
+          "class_type": "KSampler",
+          "inputs": {
+            "positive": [
+              "2",
+              0
+            ],
+            "negative": [
+              "3",
+              0
+            ],
+            "seed": 42,
+            "steps": 20
+          }
+        },
+        "2": {
+          "class_type": "CLIPTextEncode",
+          "inputs": {
+            "text": "A photo of a cat"
+          }
+        },
+        "3": {
+          "class_type": "CLIPTextEncodeSDXL",
+          "inputs": {
+            "text_g": "bad",
+            "text_l": "blur"
+          }
+        }
+      },
+      "workflow_json": {
+        "nodes": []
+      },
+      "workflow": "{\"nodes\":[]}",
+      "generator": "ComfyUI",
+      "Seed": 42,
+      "Steps": 20,
+      "negative_prompt": "bad blur"
+    }
+  },
+  "randomOrder": [
+    "21",
+    "8",
+    "11",
+    "7",
+    "3"
+  ]
+}

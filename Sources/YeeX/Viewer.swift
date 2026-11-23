@@ -1,0 +1,753 @@
+import AppKit
+import os
+import YeeXCore
+
+private let imagePipeline = ImagePipeline()
+private let metadataQueue = DispatchQueue(label: "YeeX metadata", qos: .utility)
+
+@MainActor
+final class Viewer: NSWindowController, NSWindowDelegate {
+    private let canvas = Canvas()
+    private let root = NSStackView()
+    private let body = NSStackView()
+    private let status = NSTextField(labelWithString: "")
+    private let watchStatus = NSTextField(labelWithString: "")
+    private let countStatus = NSTextField(labelWithString: "")
+    private let rateStatus = NSTextField(labelWithString: "")
+    private let info = DetailPanel(title: "Info")
+    private let copy = DetailPanel(title: "Copy Destinations")
+    private let move = DetailPanel(title: "Move Destinations")
+    private let verticalButton = NSButton()
+    private let horizontalButton = NSButton()
+
+    private var catalog = Catalog()
+    private var folder: URL?
+    private let seed = UUID()
+    private var vertical: BrowseOrder = .mtime
+    private var horizontal: BrowseOrder = .random
+    private var loop = false
+    private(set) var freeScroll = false
+    private var polling = false
+    private var folderWork = FolderWork()
+    private var imageWork = ImageWork()
+    private let pendingMetadata = OSAllocatedUnfairLock<MetadataRequest?>(initialState: nil)
+    private var metadataID: UUID?
+    private var metadataWorker: Task<Void, Never>?
+    private var opening: Task<Void, Never>?
+    private var loadTask: Task<Void, Never>?
+    private var scanned = Set<String>()
+    private var refreshAfterScan: String?
+    private var failed = Set<String>()
+    private var current: ImageRecord?
+    private var intended: String?
+    private var displayTimes: [TimeInterval] = []
+    private var statusReset: Task<Void, Never>?
+    private var isClosed = false
+    var isEmpty: Bool { folder == nil && opening == nil }
+    var emptyMessage = "Open an image or folder"
+    var transferInProgress = false
+    var displayedRecord: ImageRecord? { current }
+
+    init() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 640),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                              backing: .buffered, defer: false)
+        super.init(window: window)
+        window.title = "YeeX"
+        window.titleVisibility = .visible
+        window.minSize = CGSize(width: 560, height: 360)
+        window.tabbingMode = .disallowed
+        window.delegate = self
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.setFrameUsingName("YeeX Viewer")
+        window.styleMask.remove(.fullSizeContentView)
+        buildInterface(window)
+    }
+
+    required init?(coder: NSCoder) { fatalError("Viewer is created in code") }
+
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        window?.makeKeyAndOrderFront(sender)
+        window?.makeFirstResponder(canvas)
+    }
+
+    private func buildInterface(_ window: NSWindow) {
+        root.orientation = .vertical
+        root.alignment = .width
+        root.spacing = 0
+        body.orientation = .horizontal
+        body.alignment = .height
+        body.spacing = 0
+        body.addArrangedSubview(canvas)
+        canvas.controller = self
+        canvas.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        canvas.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for panel in [info, copy, move] {
+            body.addArrangedSubview(panel)
+            panel.isHidden = true
+            panel.widthAnchor.constraint(equalToConstant: panel === info ? 295 : 230).isActive = true
+        }
+
+        let toolbar = NSToolbar(identifier: "YeeX Toolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        window.toolbarStyle = .unifiedCompact
+        window.toolbar = toolbar
+        configureAxis(verticalButton, action: #selector(cycleVertical))
+        configureAxis(horizontalButton, action: #selector(cycleHorizontal))
+        updateOrderTitles()
+
+        let footer = NSStackView()
+        footer.spacing = 14
+        footer.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
+        for label in [status, watchStatus, rateStatus, countStatus] {
+            label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+            label.textColor = .secondaryLabelColor
+            label.lineBreakMode = .byTruncatingTail
+            footer.addArrangedSubview(label)
+        }
+        status.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for label in [watchStatus, rateStatus, countStatus] {
+            label.setContentHuggingPriority(.required, for: .horizontal)
+            label.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        root.addArrangedSubview(body)
+        root.addArrangedSubview(NSBox.separator())
+        root.addArrangedSubview(footer)
+        body.setContentHuggingPriority(.defaultLow, for: .vertical)
+        window.contentView = root
+        window.initialFirstResponder = canvas
+        updateStatus()
+    }
+
+    private func configureAxis(_ button: NSButton, action: Selector) {
+        button.target = self
+        button.action = action
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.refusesFirstResponder = true
+        button.widthAnchor.constraint(equalToConstant: 116).isActive = true
+    }
+
+    private func updateOrderTitles() {
+        verticalButton.title = "VScroll: \(vertical.rawValue)"
+        horizontalButton.title = "HScroll: \(horizontal.rawValue)"
+        verticalButton.setAccessibilityLabel("Vertical Order: \(vertical.rawValue)")
+        horizontalButton.setAccessibilityLabel("Horizontal Order: \(horizontal.rawValue)")
+        verticalButton.toolTip = "Change vertical navigation order"
+        horizontalButton.toolTip = "Change horizontal navigation order"
+    }
+
+    @objc private func cycleVertical() { vertical = vertical.toggled(excluding: horizontal); updateOrderTitles(); prefetch() }
+    @objc private func cycleHorizontal() { horizontal = horizontal.toggled(excluding: vertical); updateOrderTitles(); prefetch() }
+    @objc private func toggleLoop(_ sender: NSButton) { loop = sender.state == .on; prefetch() }
+    @objc private func toggleFreeScroll(_ sender: NSButton) { freeScroll = sender.state == .on }
+    @objc private func togglePolling(_ sender: NSButton) {
+        polling = sender.state == .on
+        updatePolling()
+    }
+
+    @objc func fitImage() { canvas.fit() }
+    @objc func actualSize() { canvas.actualSize() }
+    @objc func reveal() {
+        if let current { NSWorkspace.shared.activateFileViewerSelecting([current.url]) }
+    }
+
+    @objc func fitWindow() {
+        guard let window, let screen = window.screen, let image = canvas.image else { return }
+        let old = window.frame
+        let work = screen.visibleFrame
+        let extraW = max(0, old.width - canvas.bounds.width)
+        let extraH = max(0, old.height - canvas.bounds.height)
+        let scale = min((work.width - extraW) / CGFloat(image.width), (work.height - extraH) / CGFloat(image.height))
+        guard scale > 0 else { return }
+        let width = min(work.width, max(window.minSize.width, CGFloat(image.width) * scale + extraW))
+        let height = min(work.height, max(window.minSize.height, CGFloat(image.height) * scale + extraH))
+        let x = max(work.minX, min(old.midX - width / 2, work.maxX - width))
+        let y = max(work.minY, min(old.maxY, work.maxY) - height)
+        window.setFrame(NSRect(x: x, y: y, width: width, height: height), display: true)
+        canvas.fit()
+    }
+
+    private func toggle(_ panel: DetailPanel) {
+        let show = panel.isHidden
+        for other in [info, copy, move] { other.isHidden = other !== panel || !show }
+        refreshMetadata()
+        if !copy.isHidden { refreshDestinations(copy, mode: .copy) }
+        if !move.isHidden { refreshDestinations(move, mode: .move) }
+        canvas.fit()
+        window?.makeFirstResponder(canvas)
+    }
+
+    @objc func toggleInfo() { toggle(info) }
+    @objc func toggleCopy() { toggle(copy) }
+    @objc func toggleMove() { toggle(move) }
+
+    func destinationsDidChange() {
+        if !copy.isHidden { refreshDestinations(copy, mode: .copy) }
+        if !move.isHidden { refreshDestinations(move, mode: .move) }
+    }
+
+    private func refreshMetadata() {
+        pendingMetadata.withLock { $0 = nil }
+        metadataID = nil
+        guard !info.isHidden else { return }
+        guard let record = current else { info.message("No image selected."); return }
+        guard ImageMetadata.supports(record.url) else {
+            info.message("Image metadata is unavailable for this image.")
+            return
+        }
+        info.message("Reading metadata…")
+        let request = MetadataRequest(url: record.url)
+        metadataID = request.id
+        pendingMetadata.withLock { $0 = request }
+        guard metadataWorker == nil else { return }
+
+        let pending = pendingMetadata
+        metadataWorker = Task { [weak self] in
+            while !Task.isCancelled {
+                let completed: (UUID, Result<ImageMetadata, any Error>)? = await withCheckedContinuation { continuation in
+                    metadataQueue.async {
+                        let request = pending.withLock {
+                            let request = $0
+                            $0 = nil
+                            return request
+                        }
+                        continuation.resume(returning: request.map { request in
+                            (request.id, Result { try ImageMetadata.read(request.url) })
+                        })
+                    }
+                }
+                guard !Task.isCancelled, let self else { return }
+                if let (id, result) = completed, id == metadataID {
+                    switch result {
+                    case .success(let metadata): info.show(metadata)
+                    case .failure(let error): info.message(error.localizedDescription)
+                    }
+                }
+                if pending.withLock({ $0 == nil }) {
+                    metadataWorker = nil
+                    return
+                }
+            }
+        }
+    }
+
+    func chooseFile() { choose(directory: false) }
+    func chooseFolder() { choose(directory: true) }
+    private func choose(directory: Bool) {
+        let dialog = NSOpenPanel()
+        dialog.canChooseFiles = !directory
+        dialog.canChooseDirectories = directory
+        dialog.allowsMultipleSelection = false
+        dialog.treatsFilePackagesAsDirectories = false
+        dialog.directoryURL = folder
+        if let window {
+            dialog.beginSheetModal(for: window) { [weak self] response in
+                if response == .OK, let url = dialog.url { self?.open(url) }
+            }
+        }
+    }
+
+    func open(_ url: URL) {
+        guard !isClosed else { return }
+        cancel(&opening)
+        let seed = self.seed
+        opening = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .userInitiated) { OpenTarget.resolve(url, seed: seed) }
+            let target = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+            guard !Task.isCancelled, let self else { return }
+            defer { if !Task.isCancelled { opening = nil } }
+            switch target {
+            case .folder(let url):
+                if folder == url { beginScan() }
+                else { switchFolder(url) }
+            case .image(let record, let parent):
+                let decoded = await imagePipeline.image(record)
+                guard !Task.isCancelled else { return }
+                if let decoded {
+                    if folder != parent { switchFolder(parent, initial: (record, decoded)) }
+                    else {
+                        presentExplicit(record, decoded: decoded)
+                        if folderWork.scan == nil { beginScan(refreshCurrent: false) }
+                    }
+                } else { message("Unable to open \(record.name).") }
+            case .failure(let text):
+                message(text)
+            }
+        }
+    }
+
+    private func presentExplicit(_ record: ImageRecord, decoded: DecodedImage) {
+        cancel(&loadTask)
+        failed.remove(record.id)
+        catalog.upsert(record)
+        display(record, decoded, continueForward: nil)
+    }
+
+    private func switchFolder(_ url: URL,
+                              initial: (ImageRecord, DecodedImage)? = nil) {
+        folderWork.end()
+        cancel(&loadTask)
+        intended = nil
+        clearImage()
+        folder = url
+        catalog = Catalog()
+        if let (record, decoded) = initial { presentExplicit(record, decoded: decoded) }
+        beginScan(refreshCurrent: false)
+    }
+
+    @objc func reload() { if folderWork.scan == nil { beginScan(invalidateCache: true) } }
+
+    private func beginScan(refreshCurrent: Bool = true, invalidateCache: Bool = false) {
+        guard !isClosed, let folder else { return }
+        refreshAfterScan = refreshCurrent ? current?.id : nil
+        let generation = folderWork.startScan()
+        let seed = self.seed
+        scanned.removeAll(keepingCapacity: true)
+        failed.removeAll(keepingCapacity: true)
+        emptyMessage = "Scanning folder…"
+        canvas.needsDisplay = true
+        message("Scanning \(folder.lastPathComponent)…", persistent: true)
+        updateStatus()
+
+        let needsWatch = folderWork.watch == nil
+        folderWork.scan = Task.detached(priority: .utility) { [weak self] in
+            if needsWatch {
+                let fd = Darwin.open(folder.path, O_EVTONLY | O_CLOEXEC)
+                if fd >= 0 {
+                    if let self { await self.attachWatch(fd, generation: generation) }
+                    else { Darwin.close(fd) }
+                }
+            }
+            do {
+                try Task.checkCancellation()
+                let result = try await FolderScanner.scan(folder, seed: seed) { [weak self] records in
+                    await self?.publish(records, generation: generation)
+                }
+                try Task.checkCancellation()
+                if invalidateCache { await imagePipeline.invalidateImages(in: folder) }
+                await self?.finishScan(result, error: nil, generation: generation, cacheInvalidated: invalidateCache)
+            } catch is CancellationError {
+            } catch {
+                await self?.finishScan(nil, error: error.localizedDescription, generation: generation)
+            }
+        }
+    }
+
+    private func attachWatch(_ fd: Int32, generation: UUID) {
+        guard folderWork.generation == generation, folderWork.watch == nil else { Darwin.close(fd); return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd,
+            eventMask: [.write, .delete, .rename, .revoke], queue: .main)
+        source.setEventHandler { [weak self, weak source] in
+            guard let source else { return }
+            MainActor.assumeIsolated { self?.folderChanged(source.data) }
+        }
+        source.setCancelHandler { Darwin.close(fd) }
+        folderWork.watch = source
+        source.resume()
+        updateStatus()
+    }
+
+    private func publish(_ records: [ImageRecord], generation: UUID) {
+        guard generation == folderWork.generation else { return }
+        for record in records {
+            scanned.insert(record.id)
+            if !failed.contains(record.id) { catalog.upsert(record) }
+        }
+        if current == nil, loadTask == nil { loadFirst() }
+        updateStatus()
+    }
+
+    private func finishScan(_ result: ScanResult?, error: String?, generation: UUID,
+                            cacheInvalidated: Bool = false) {
+        guard generation == folderWork.generation else { return }
+        folderWork.scan = nil
+        folderWork.observation.finish(result)
+        if result != nil {
+            for id in Array(catalog.ids) where !scanned.contains(id) { catalog.remove(id) }
+            if let current, catalog[current.id] == nil {
+                if let intended, catalog[intended] != nil { clearImage() }
+                else {
+                    cancel(&loadTask)
+                    intended = nil
+                    clearImage()
+                }
+            }
+            if cacheInvalidated {
+                let updated = [intended, current?.id].compactMap { $0.flatMap { catalog[$0] } }.first
+                cancel(&loadTask)
+                if let updated {
+                    request(updated, order: nil, forward: true)
+                } else {
+                    intended = nil
+                }
+            } else if loadTask == nil, let current, current.id == refreshAfterScan, let updated = catalog[current.id] {
+                request(updated, order: nil, forward: true, refresh: true)
+            }
+        }
+        scanned.removeAll(keepingCapacity: true)
+        refreshAfterScan = nil
+        if loadTask == nil { prefetch() }
+        if current == nil, loadTask == nil { loadFirst() }
+        emptyMessage = error == nil ? "No readable images in this folder" : "Unable to scan this folder"
+        canvas.needsDisplay = true
+        if folderWork.observation.requiresReload {
+            message("Folder changed during scan. Use Reload Current Folder.", persistent: true)
+        } else {
+            message(error.map { "Unable to finish folder scan: \($0)" } ?? "Scan complete")
+        }
+        updatePolling()
+    }
+
+    private func folderChanged(_ events: DispatchSource.FileSystemEvent) {
+        if !events.intersection([.delete, .rename, .revoke]).isEmpty {
+            folderWork.stopWatching()
+        }
+        if folderWork.observation.changed() { beginScan() }
+        else { updateStatus() }
+    }
+
+    private func updatePolling() {
+        cancel(&folderWork.poll)
+        if polling, let folder, !folderWork.observation.scanning, !folderWork.observation.requiresReload {
+            let generation = folderWork.generation
+            folderWork.poll = Task.detached(priority: .utility) { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(2)) } catch { break }
+                    if let names = try? FolderScanner.candidateNames(in: folder),
+                       await self?.comparePoll(names, generation: generation) != true { break }
+                }
+            }
+        }
+        updateStatus()
+    }
+
+    private func comparePoll(_ names: Set<String>, generation: UUID) -> Bool {
+        guard folderWork.generation == generation, polling, !Task.isCancelled else { return false }
+        switch folderWork.observation.poll(names) {
+        case .keepPolling: return true
+        case .scan: beginScan()
+        case .requireReload:
+            folderWork.poll = nil
+            message("Folder changed during scan. Use Reload Current Folder.", persistent: true)
+            updateStatus()
+        case .idle:
+            folderWork.poll = nil
+            message("Polling stopped")
+            updateStatus()
+        }
+        return false
+    }
+
+    func navigate(vertical: Bool, forward: Bool) {
+        let order = vertical ? self.vertical : horizontal
+        guard let anchor = intended ?? current?.id,
+              let id = catalog.neighbor(anchor, order: order, forward: forward, loop: loop),
+              id != anchor, let record = catalog[id] else { return }
+        request(record, order: order, forward: forward)
+    }
+
+    private func loadFirst() {
+        if let id = catalog.first(.mtime), let record = catalog[id] {
+            request(record, order: nil, forward: true)
+        }
+    }
+
+    private func request(_ record: ImageRecord, order: BrowseOrder?, forward: Bool, refresh: Bool = false,
+                         fallback: String? = nil) {
+        cancel(&loadTask)
+        cancel(&imageWork.prefetch)
+        intended = record.id
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            var candidate: ImageRecord? = record
+            var forward = forward
+            var fallback = fallback
+            while let next = candidate {
+                let image = await imagePipeline.image(next, refresh: refresh && next.id == record.id)
+                guard !Task.isCancelled else { return }
+                if let image, catalog[next.id] != nil {
+                    loadTask = nil
+                    display(next, image, continueForward: order.map { ($0, forward) })
+                    return
+                }
+                let currentID = current?.id
+                let neighbor = order.flatMap { catalog.neighbor(next.id, order: $0, forward: forward, loop: loop) }
+                failed.insert(next.id)
+                catalog.remove(next.id)
+                if next.id == currentID { clearImage() }
+                candidate = (order == nil && current == nil ? catalog.first(.mtime) : neighbor)
+                    .flatMap { $0 == currentID ? nil : catalog[$0] }
+                if candidate == nil, let other = fallback {
+                    fallback = nil
+                    forward.toggle()
+                    candidate = catalog[other]
+                }
+                intended = candidate?.id
+                updateStatus()
+                await Task.yield()
+            }
+            guard !Task.isCancelled else { return }
+            intended = current?.id
+            loadTask = nil
+        }
+    }
+
+    private func display(_ record: ImageRecord, _ decoded: DecodedImage, continueForward: (BrowseOrder, Bool)?) {
+        imageWork.end()
+        current = record
+        intended = record.id
+        window?.title = "YeeX — \(record.url.lastPathComponent)"
+        window?.representedURL = record.url
+        canvas.show(decoded.image, reset: true)
+        canvas.setAccessibilityLabel(record.url.lastPathComponent)
+        let now = ProcessInfo.processInfo.systemUptime
+        displayTimes.removeAll { now - $0 > 1 }
+        displayTimes.append(now)
+        rateStatus.stringValue = "\(displayTimes.count) ips"
+        startAnimation(record, decoded: decoded)
+        refreshMetadata()
+        prefetch(prioritizing: continueForward)
+    }
+
+    private func startAnimation(_ record: ImageRecord, decoded: DecodedImage) {
+        guard decoded.frameCount > 1 else { return }
+        imageWork.animation = Task { [weak self] in
+            let playback = AnimationPlayback(url: record.url)
+            var position = 0
+            var completed = 0
+            var delay = decoded.frameDelay
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(delay)) } catch { break }
+                position += 1
+                if position == decoded.frameCount {
+                    position = 0
+                    completed += 1
+                    let limit = decoded.loopCount ?? 1
+                    if limit > 0, completed >= limit { break }
+                }
+                guard let frame = await imagePipeline.image(record, frame: position, playback: playback), !Task.isCancelled,
+                      let self, current?.id == record.id else { break }
+                canvas.show(frame.image, reset: false)
+                delay = frame.frameDelay
+            }
+        }
+    }
+
+    private func prefetch(prioritizing direction: (BrowseOrder, Bool)? = nil) {
+        cancel(&imageWork.prefetch)
+        guard let current else { return }
+        var directions = [(vertical, true), (vertical, false), (horizontal, true), (horizontal, false)]
+        if let direction { directions.insert(direction, at: 0) }
+        var seen = Set([current.id])
+        let candidates = directions.compactMap { order, forward -> ImageRecord? in
+            guard let id = catalog.neighbor(current.id, order: order, forward: forward, loop: loop),
+                  seen.insert(id).inserted else { return nil }
+            return catalog[id]
+        }
+        imageWork.prefetch = Task(priority: .utility) {
+            for record in candidates {
+                guard !Task.isCancelled else { break }
+                _ = await imagePipeline.image(record, prefetch: true)
+            }
+        }
+    }
+
+    private func clearImage() {
+        imageWork.end()
+        current = nil
+        window?.title = "YeeX"
+        window?.representedURL = nil
+        canvas.show(nil, reset: true)
+        canvas.setAccessibilityLabel("Image viewer")
+        refreshMetadata()
+    }
+
+    func didMove(_ record: ImageRecord) {
+        guard !isClosed else { return }
+        let down = catalog.neighbor(record.id, order: vertical, forward: false, loop: loop)
+        let up = catalog.neighbor(record.id, order: vertical, forward: true, loop: loop)
+        if folderWork.observation.scanning { failed.insert(record.id) }
+        catalog.remove(record.id)
+        if current?.id == record.id {
+            cancel(&loadTask)
+            intended = nil
+            clearImage()
+            let target = down.flatMap { catalog[$0] } ?? up.flatMap { catalog[$0] }
+            if let target {
+                request(target, order: vertical, forward: target.id != down, fallback: target.id == down ? up : nil)
+            }
+        }
+        updateStatus()
+    }
+
+    func message(_ text: String, persistent: Bool = false) {
+        guard !isClosed else { return }
+        cancel(&statusReset)
+        status.stringValue = text
+        if !persistent {
+            statusReset = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled, let self else { return }
+                statusReset = nil
+                status.stringValue = folderWork.observation.requiresReload ? "Use Reload Current Folder." : ""
+            }
+        }
+    }
+
+    private func updateStatus() {
+        countStatus.stringValue = "Count: \(catalog.count)"
+        watchStatus.stringValue = folderWork.observation.requiresReload && !folderWork.observation.scanning
+            ? "Reload required" : "Watch: \(folderWork.watch == nil ? "-" : "w")\(folderWork.poll == nil ? "-" : "p")"
+    }
+
+    func saveFrame() { window?.saveFrame(usingName: "YeeX Viewer") }
+    func windowDidResize(_ notification: Notification) { canvas.fit() }
+    func windowWillClose(_ notification: Notification) {
+        saveFrame()
+        isClosed = true
+        cancel(&opening)
+        cancel(&loadTask)
+        cancel(&statusReset)
+        pendingMetadata.withLock { $0 = nil }
+        cancel(&metadataWorker)
+        imageWork.end()
+        folderWork.end()
+        canvas.stopScrollDecay()
+        (NSApp.delegate as? Application)?.didClose(self)
+    }
+}
+
+private func cancel(_ task: inout Task<Void, Never>?) {
+    task?.cancel()
+    task = nil
+}
+
+private enum OpenTarget {
+    case folder(URL)
+    case image(ImageRecord, parent: URL)
+    case failure(String)
+
+    static func resolve(_ url: URL, seed: UUID) -> Self {
+        let file = url.standardizedFileURL
+        let resolved = file.resolvingSymlinksInPath()
+        let directory = (try? resolved.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        if directory && !ImageFormats.isPixelmator(file) { return .folder(resolved) }
+        let name = file.lastPathComponent
+        guard ImageFormats.accepts(file) else { return .failure("Unsupported file: \(name)") }
+        let parent = file.deletingLastPathComponent().resolvingSymlinksInPath()
+        guard let record = try? FolderScanner.record(at: parent.appendingPathComponent(name), seed: seed) else {
+            return .failure("Unable to open \(name).")
+        }
+        return .image(record, parent: parent)
+    }
+}
+
+private struct FolderWork {
+    var scan: Task<Void, Never>?
+    var poll: Task<Void, Never>?
+    var watch: DispatchSourceFileSystemObject?
+    var observation = FolderObservation()
+    private(set) var generation = UUID()
+
+    mutating func startScan() -> UUID {
+        cancel(&scan)
+        cancel(&poll)
+        generation = UUID()
+        observation.begin()
+        return generation
+    }
+
+    mutating func end() {
+        cancel(&scan)
+        cancel(&poll)
+        stopWatching()
+        self = FolderWork()
+    }
+
+    mutating func stopWatching() {
+        watch?.cancel()
+        watch = nil
+    }
+}
+
+private struct ImageWork {
+    var animation: Task<Void, Never>?
+    var prefetch: Task<Void, Never>?
+
+    mutating func end() {
+        cancel(&animation)
+        cancel(&prefetch)
+    }
+}
+
+private struct MetadataRequest: Sendable {
+    let url: URL
+    let id = UUID()
+}
+
+extension Viewer: NSToolbarDelegate {
+    private static let toolbarItems = ["open", "reload", "copy", "move", "info", "fit", "vertical", "horizontal", "loop", "free", "poll"]
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        Self.toolbarItems.map { NSToolbarItem.Identifier($0) } + [.flexibleSpace]
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        Self.toolbarItems.map { NSToolbarItem.Identifier($0) }
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier: id)
+        let command: (String, String, Selector)
+        switch id.rawValue {
+        case "open": command = ("Open Folder", "folder", #selector(openFolderToolbar))
+        case "reload": command = ("Reload Current Folder", "arrow.clockwise", #selector(reload))
+        case "copy": command = ("Copy Destinations", "document.on.document", #selector(toggleCopy))
+        case "move": command = ("Move Destinations", "folder.badge.plus", #selector(toggleMove))
+        case "info": command = ("Info", "info.circle", #selector(toggleInfo))
+        case "fit": command = ("Normal Size", "arrow.up.left.and.arrow.down.right", #selector(fitImage))
+        case "vertical", "horizontal":
+            item.label = id.rawValue == "vertical" ? "Vertical Order" : "Horizontal Order"
+            item.view = id.rawValue == "vertical" ? verticalButton : horizontalButton
+            item.visibilityPriority = .high
+            return item
+        case "loop", "free", "poll":
+            let controls: [String: (String, Selector)] = [
+                "loop": ("Loop", #selector(toggleLoop(_:))),
+                "free": ("Free Scroll", #selector(toggleFreeScroll(_:))),
+                "poll": ("Poll", #selector(togglePolling(_:)))
+            ]
+            guard let (label, action) = controls[id.rawValue] else { return nil }
+            let button = NSButton(checkboxWithTitle: label, target: self, action: action)
+            button.controlSize = .small
+            button.refusesFirstResponder = true
+            item.label = label
+            item.view = button
+            return item
+        default: return nil
+        }
+        item.label = command.0
+        item.toolTip = command.0
+        item.image = NSImage(systemSymbolName: command.1, accessibilityDescription: command.0)
+        item.target = self
+        item.action = command.2
+        return item
+    }
+
+    @objc private func openFolderToolbar() { chooseFolder() }
+}
+
+private extension NSBox {
+    static func separator() -> NSBox {
+        let box = NSBox()
+        box.boxType = .separator
+        return box
+    }
+}
