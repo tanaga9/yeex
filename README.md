@@ -21,10 +21,10 @@ The build script ad hoc signs `YeeX.app` for local testing. If a restricted shel
 
 ## Publish a release
 
-In GitHub Actions, open **Release YeeX** and choose **Run workflow** from the default branch. Enter a version such as `0.1.0` and the full SHA of the commit to release. You can also run the workflow from the repository with GitHub CLI, which prompts for both inputs.
+In GitHub Actions, open **Release YeeX** and choose **Run workflow** from the default branch. Enter a version such as `0.2.0`. Leave the commit field empty to release the default branch's head at the time you start the workflow, or enter the full SHA of a specific commit.
 
 ```sh
-gh workflow run release.yml
+gh workflow run release.yml -f version=0.2.0
 ```
 
 The workflow tests the selected commit on Apple Silicon, sets the requested version in its temporary checkout, and verifies the signed app inside the ZIP. It then creates the matching Git tag and publishes the ZIP with generated release notes. An existing release or draft for that version, or a tag pointing at a different commit, stops publication. If a canceled run leaves a draft, remove that draft before retrying. The app is ad hoc signed and is not notarized.

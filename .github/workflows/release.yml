@@ -8,8 +8,8 @@ on:
         required: true
         type: string
       commit:
-        description: Full commit SHA to build and release
-        required: true
+        description: Full commit SHA (leave blank to release the default branch at dispatch)
+        required: false
         type: string
 
 permissions:
@@ -23,6 +23,8 @@ jobs:
   build:
     runs-on: macos-26
     timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.release.outputs.commit }}
     steps:
       - name: Validate release inputs
         id: release
@@ -40,11 +42,14 @@ jobs:
             echo "Enter a release version such as 0.1.0."
             exit 1
           fi
+          COMMIT="${COMMIT:-$GITHUB_SHA}"
           if [[ ! "$COMMIT" =~ ^[[:xdigit:]]{40}$ ]]; then
             echo "Enter a full 40-character commit SHA."
             exit 1
           fi
-          printf 'commit=%s\n' "$(printf '%s' "$COMMIT" | tr 'A-F' 'a-f')" >> "$GITHUB_OUTPUT"
+          COMMIT="$(printf '%s' "$COMMIT" | tr 'A-F' 'a-f')"
+          printf 'Release commit: %s\n' "$COMMIT"
+          printf 'commit=%s\n' "$COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Check out the selected commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,10 +109,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG_TOKEN: ${{ secrets.YEEX_RELEASE_TAG_TOKEN }}
           VERSION: ${{ inputs.version }}
-          COMMIT: ${{ inputs.commit }}
+          COMMIT: ${{ needs.build.outputs.commit }}
         run: |
           repo="$GITHUB_REPOSITORY"
-          commit="$(printf '%s' "$COMMIT" | tr 'A-F' 'a-f')"
           tag="v$VERSION"
           ref="refs/tags/$tag"
           archive="YeeX-${VERSION}-macOS-arm64.zip"
@@ -124,11 +128,11 @@ jobs:
             --jq ".[] | select(.ref == \"$ref\") | .ref")"
           if [[ -z "$existing_ref" ]]; then
             if ! GH_TOKEN="${TAG_TOKEN:-$GH_TOKEN}" gh api --method POST "repos/$repo/git/refs" \
-              -f ref="$ref" -f sha="$commit" >/dev/null; then
+              -f ref="$ref" -f sha="$COMMIT" >/dev/null; then
               echo "Could not create the tag. If GitHub requires Workflows permission, configure YEEX_RELEASE_TAG_TOKEN."
               exit 1
             fi
-          elif [[ "$(gh api "repos/$repo/commits/$ref" --jq .sha)" != "$commit" ]]; then
+          elif [[ "$(gh api "repos/$repo/commits/$ref" --jq .sha)" != "$COMMIT" ]]; then
             echo "The existing tag does not match the selected commit."
             exit 1
           fi
