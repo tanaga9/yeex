@@ -97,6 +97,14 @@ final class Application: NSObject, NSApplicationDelegate {
         view.addItem(withTitle: "Actual Size", action: #selector(Viewer.actualSize), keyEquivalent: "1").keyEquivalentModifierMask = [.command, .option]
         view.addItem(withTitle: "Fit Window to Image", action: #selector(Viewer.fitWindow), keyEquivalent: "")
         view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f").keyEquivalentModifierMask = [.command, .control]
+        view.addItem(.separator())
+        view.addItem(withTitle: "Vertical Sort", action: #selector(Viewer.cycleVertical), keyEquivalent: "")
+        view.addItem(withTitle: "Horizontal Sort", action: #selector(Viewer.cycleHorizontal), keyEquivalent: "")
+        view.addItem(withTitle: "Loop", action: #selector(Viewer.toggleLoop), keyEquivalent: "")
+        view.addItem(withTitle: "Free Scroll", action: #selector(Viewer.toggleFreeScroll), keyEquivalent: "")
+        view.addItem(withTitle: "Poll", action: #selector(Viewer.togglePolling), keyEquivalent: "")
+        view.addItem(.separator())
+        view.addItem(withTitle: "Customize Toolbar…", action: #selector(NSWindow.runToolbarCustomizationPalette(_:)), keyEquivalent: "")
 
         let window = group("Window")
         window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")

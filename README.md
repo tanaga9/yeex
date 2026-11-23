@@ -1,10 +1,10 @@
 # YeeX
 
-YeeX is a single-image viewer for Apple Silicon. It uses AppKit for input and ImageIO and Core Graphics to decode and render images. Build it with Swift 6. At runtime, it uses macOS frameworks and the system zlib library.
+YeeX is a single-image viewer for Apple Silicon. It uses AppKit for input and ImageIO and Core Graphics to decode and render images. At runtime, it uses macOS frameworks and the system zlib library.
 
 ## Build and launch
 
-You need an Apple Silicon Mac running macOS 14 or later, with Swift 6 from Xcode or the Command Line Tools.
+You need an Apple Silicon Mac running macOS 26 or later. Build with Xcode 26 or later, or the corresponding Command Line Tools.
 
 ```sh
 ./Scripts/build-app.sh
@@ -25,7 +25,8 @@ The build script ad hoc signs `YeeX.app` for local testing. If a restricted shel
 | --- | --- |
 | Open an image or folder | ⌘O or ⇧⌘O, or drag and drop |
 | Browse images | Arrow keys, mouse wheel, or trackpad |
-| Change the vertical or horizontal sort order | VScroll or HScroll in the toolbar |
+| Change the vertical or horizontal sort order | V or H in the toolbar, or Vertical Sort or Horizontal Sort in the View menu |
+| Toggle looping, free scrolling, or polling | Loop, Free Scroll, or Poll in the toolbar or View menu |
 | Zoom and pan | `+` or `-`, pinch, or scroll and drag while zoomed in |
 | Fit the image to the window or show it at actual size | ⌘0 or ⌥⌘1 |
 | Fit the window to the image | Double-click the image |

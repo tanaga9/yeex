@@ -17,8 +17,6 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     private let info = DetailPanel(title: "Info")
     private let copy = DetailPanel(title: "Copy Destinations")
     private let move = DetailPanel(title: "Move Destinations")
-    private let verticalButton = NSButton()
-    private let horizontalButton = NSButton()
 
     private var catalog = Catalog()
     private var folder: URL?
@@ -92,12 +90,12 @@ final class Viewer: NSWindowController, NSWindowDelegate {
 
         let toolbar = NSToolbar(identifier: "YeeX Toolbar")
         toolbar.delegate = self
-        toolbar.displayMode = .iconOnly
-        window.toolbarStyle = .unifiedCompact
+        toolbar.displayMode = .iconAndLabel
+        toolbar.allowsUserCustomization = true
+        toolbar.allowsDisplayModeCustomization = true
+        toolbar.autosavesConfiguration = true
+        window.toolbarStyle = .unified
         window.toolbar = toolbar
-        configureAxis(verticalButton, action: #selector(cycleVertical))
-        configureAxis(horizontalButton, action: #selector(cycleHorizontal))
-        updateOrderTitles()
 
         let footer = NSStackView()
         footer.spacing = 14
@@ -123,30 +121,32 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         updateStatus()
     }
 
-    private func configureAxis(_ button: NSButton, action: Selector) {
-        button.target = self
-        button.action = action
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.refusesFirstResponder = true
-        button.widthAnchor.constraint(equalToConstant: 116).isActive = true
+    @objc func cycleVertical() {
+        vertical = vertical.toggled(excluding: horizontal)
+        refreshToolbarItem("vertical")
+        prefetch()
     }
 
-    private func updateOrderTitles() {
-        verticalButton.title = "VScroll: \(vertical.rawValue)"
-        horizontalButton.title = "HScroll: \(horizontal.rawValue)"
-        verticalButton.setAccessibilityLabel("Vertical Order: \(vertical.rawValue)")
-        horizontalButton.setAccessibilityLabel("Horizontal Order: \(horizontal.rawValue)")
-        verticalButton.toolTip = "Change vertical navigation order"
-        horizontalButton.toolTip = "Change horizontal navigation order"
+    @objc func cycleHorizontal() {
+        horizontal = horizontal.toggled(excluding: vertical)
+        refreshToolbarItem("horizontal")
+        prefetch()
     }
 
-    @objc private func cycleVertical() { vertical = vertical.toggled(excluding: horizontal); updateOrderTitles(); prefetch() }
-    @objc private func cycleHorizontal() { horizontal = horizontal.toggled(excluding: vertical); updateOrderTitles(); prefetch() }
-    @objc private func toggleLoop(_ sender: NSButton) { loop = sender.state == .on; prefetch() }
-    @objc private func toggleFreeScroll(_ sender: NSButton) { freeScroll = sender.state == .on }
-    @objc private func togglePolling(_ sender: NSButton) {
-        polling = sender.state == .on
+    @objc func toggleLoop() {
+        loop.toggle()
+        refreshToolbarItem("loop")
+        prefetch()
+    }
+
+    @objc func toggleFreeScroll() {
+        freeScroll.toggle()
+        refreshToolbarItem("free")
+    }
+
+    @objc func togglePolling() {
+        polling.toggle()
+        refreshToolbarItem("poll")
         updatePolling()
     }
 
@@ -695,7 +695,7 @@ extension Viewer: NSToolbarDelegate {
     private static let toolbarItems = ["open", "reload", "copy", "move", "info", "fit", "vertical", "horizontal", "loop", "free", "poll"]
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        Self.toolbarItems.map { NSToolbarItem.Identifier($0) } + [.flexibleSpace]
+        toolbarDefaultItemIdentifiers(toolbar) + [.space, .flexibleSpace]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -705,43 +705,117 @@ extension Viewer: NSToolbarDelegate {
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         let item = NSToolbarItem(itemIdentifier: id)
-        let command: (String, String, Selector)
+        let command: (label: String, symbol: String, action: Selector, help: String?)
         switch id.rawValue {
-        case "open": command = ("Open Folder", "folder", #selector(openFolderToolbar))
-        case "reload": command = ("Reload Current Folder", "arrow.clockwise", #selector(reload))
-        case "copy": command = ("Copy Destinations", "document.on.document", #selector(toggleCopy))
-        case "move": command = ("Move Destinations", "folder.badge.plus", #selector(toggleMove))
-        case "info": command = ("Info", "info.circle", #selector(toggleInfo))
-        case "fit": command = ("Normal Size", "arrow.up.left.and.arrow.down.right", #selector(fitImage))
-        case "vertical", "horizontal":
-            item.label = id.rawValue == "vertical" ? "Vertical Order" : "Horizontal Order"
-            item.view = id.rawValue == "vertical" ? verticalButton : horizontalButton
-            item.visibilityPriority = .high
-            return item
-        case "loop", "free", "poll":
-            let controls: [String: (String, Selector)] = [
-                "loop": ("Loop", #selector(toggleLoop(_:))),
-                "free": ("Free Scroll", #selector(toggleFreeScroll(_:))),
-                "poll": ("Poll", #selector(togglePolling(_:)))
-            ]
-            guard let (label, action) = controls[id.rawValue] else { return nil }
-            let button = NSButton(checkboxWithTitle: label, target: self, action: action)
-            button.controlSize = .small
-            button.refusesFirstResponder = true
-            item.label = label
-            item.view = button
-            return item
+        case "open": command = ("Open Folder", "folder", #selector(openFolderToolbar), nil)
+        case "reload": command = ("Reload", "arrow.clockwise", #selector(reload), "Reload Current Folder")
+        case "copy": command = ("Copy", "document.on.document", #selector(toggleCopy), "Show or Hide Copy Destinations")
+        case "move": command = ("Move", "folder.badge.plus", #selector(toggleMove), "Show or Hide Move Destinations")
+        case "info": command = ("Info", "info.circle", #selector(toggleInfo), nil)
+        case "fit": command = ("Fit", "arrow.up.left.and.arrow.down.right", #selector(fitImage), "Fit Image to Window")
+        case "vertical": command = ("V Sort", "arrow.up.and.down", #selector(cycleVertical), "Change Vertical Sort Order")
+        case "horizontal": command = ("H Sort", "arrow.left.and.right", #selector(cycleHorizontal), "Change Horizontal Sort Order")
+        case "loop": command = ("Loop", "repeat.circle", #selector(toggleLoop), nil)
+        case "free": command = ("Free Scroll", "hand.draw", #selector(toggleFreeScroll), nil)
+        case "poll": command = ("Poll", "eye", #selector(togglePolling), nil)
         default: return nil
         }
-        item.label = command.0
-        item.toolTip = command.0
-        item.image = NSImage(systemSymbolName: command.1, accessibilityDescription: command.0)
+        item.label = command.label
+        item.paletteLabel = command.label
+        switch id.rawValue {
+        case "vertical", "horizontal":
+            item.possibleLabels = Set(BrowseOrder.allCases.map { sortToolbarLabel(item, order: $0) })
+        case "loop", "free", "poll":
+            item.possibleLabels = ["\(command.label): On", "\(command.label): Off"]
+        default:
+            break
+        }
+        let help = command.help ?? command.label
+        item.toolTip = help
+        item.image = NSImage(systemSymbolName: command.symbol, accessibilityDescription: help)
         item.target = self
-        item.action = command.2
+        item.action = command.action
+        if flag {
+            updateToolbarItem(item)
+        }
         return item
     }
 
+    private func refreshToolbarItem(_ identifier: String) {
+        if let item = window?.toolbar?.items.first(where: { $0.itemIdentifier.rawValue == identifier }) {
+            updateToolbarItem(item)
+        }
+    }
+
+    private func updateToolbarItem(_ item: NSToolbarItem) {
+        switch item.itemIdentifier.rawValue {
+        case "vertical", "horizontal":
+            let isVertical = item.itemIdentifier.rawValue == "vertical"
+            let order = isVertical ? vertical : horizontal
+            let direction = isVertical ? "Vertical" : "Horizontal"
+            item.label = sortToolbarLabel(item, order: order)
+            item.toolTip = "\(direction) Sort: \(order.sortName) — click to change order"
+            item.visibilityPriority = .high
+        case "loop":
+            updateToolbarToggle(item, isOn: loop, symbol: loop ? "repeat.circle.fill" : "repeat.circle")
+        case "free":
+            updateToolbarToggle(item, isOn: freeScroll, symbol: freeScroll ? "hand.draw.fill" : "hand.draw")
+        case "poll":
+            updateToolbarToggle(item, isOn: polling, symbol: polling ? "eye.fill" : "eye")
+        default:
+            break
+        }
+    }
+
+    private func sortToolbarLabel(_ item: NSToolbarItem, order: BrowseOrder) -> String {
+        let axis = item.itemIdentifier.rawValue == "vertical" ? "V" : "H"
+        return "\(axis): \(order.toolbarName)"
+    }
+
+    private func updateToolbarToggle(_ item: NSToolbarItem, isOn: Bool, symbol: String) {
+        let label = item.paletteLabel
+        item.label = "\(label): \(isOn ? "On" : "Off")"
+        item.toolTip = item.label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: item.label)
+        let menuItem = NSMenuItem(title: item.label, action: item.action, keyEquivalent: "")
+        menuItem.target = self
+        menuItem.state = isOn ? .on : .off
+        item.menuFormRepresentation = menuItem
+    }
+
     @objc private func openFolderToolbar() { chooseFolder() }
+}
+
+extension Viewer: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(cycleVertical):
+            menuItem.title = "Vertical Sort: \(vertical.sortName)"
+        case #selector(cycleHorizontal):
+            menuItem.title = "Horizontal Sort: \(horizontal.sortName)"
+        case #selector(toggleLoop):
+            menuItem.state = loop ? .on : .off
+        case #selector(toggleFreeScroll):
+            menuItem.state = freeScroll ? .on : .off
+        case #selector(togglePolling):
+            menuItem.state = polling ? .on : .off
+        default:
+            break
+        }
+        return !isClosed
+    }
+}
+
+private extension BrowseOrder {
+    var sortName: String { self == .mtime ? "Date Modified" : toolbarName }
+
+    var toolbarName: String {
+        switch self {
+        case .mtime: "Date"
+        case .random: "Random"
+        case .fname: "Name"
+        }
+    }
 }
 
 private extension NSBox {
