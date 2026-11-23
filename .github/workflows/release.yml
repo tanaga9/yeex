@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       commit:
-        description: Full commit SHA (leave blank to release the default branch at dispatch)
+        description: "[Optional] Enter a full commit SHA or leave blank to use the default branch's HEAD at dispatch."
         required: false
         type: string
 
