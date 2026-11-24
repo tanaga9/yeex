@@ -8,6 +8,8 @@ private let metadataQueue = DispatchQueue(label: "YeeX metadata", qos: .utility)
 @MainActor
 final class Viewer: NSWindowController, NSWindowDelegate {
     private let canvas = Canvas()
+    private let horizontalCoverFlow = CoverFlowStrip(orientation: .horizontal)
+    private let verticalCoverFlow = CoverFlowStrip(orientation: .vertical)
     private let root = NSStackView()
     private let body = NSStackView()
     private let status = NSTextField(labelWithString: "")
@@ -37,6 +39,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     private var failedDecodes: [String: ImageRecord] = [:]
     private var movedDuringScan = Set<String>()
     private var current: ImageRecord?
+    private var coverFlowThumbnail: CGImage?
     private var intended: String?
     private var displayTimes: [TimeInterval] = []
     private var statusReset: Task<Void, Never>?
@@ -78,7 +81,26 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         body.orientation = .horizontal
         body.alignment = .height
         body.spacing = 0
-        body.addArrangedSubview(canvas)
+        let canvasColumn = NSStackView(views: [canvas, horizontalCoverFlow])
+        canvasColumn.orientation = .vertical
+        canvasColumn.alignment = .width
+        canvasColumn.spacing = 0
+        canvasColumn.detachesHiddenViews = true
+        canvasColumn.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        canvasColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let imageArea = NSStackView(views: [verticalCoverFlow, canvasColumn])
+        imageArea.orientation = .horizontal
+        imageArea.alignment = .height
+        imageArea.spacing = 0
+        imageArea.detachesHiddenViews = true
+        imageArea.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        imageArea.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        for strip in [horizontalCoverFlow, verticalCoverFlow] {
+            let vertical = strip.orientation == .vertical
+            strip.selectImage = { [weak self] id in self?.selectCoverFlowImage(id) }
+            strip.step = { [weak self] forward in self?.navigate(vertical: vertical, forward: forward) }
+        }
+        body.addArrangedSubview(imageArea)
         canvas.controller = self
         canvas.setContentHuggingPriority(.defaultLow, for: .horizontal)
         canvas.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -125,18 +147,21 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     @objc func cycleVertical() {
         vertical = vertical.toggled(excluding: horizontal)
         refreshToolbarItem("vertical")
+        refreshCoverFlow(verticalCoverFlow)
         prefetch()
     }
 
     @objc func cycleHorizontal() {
         horizontal = horizontal.toggled(excluding: vertical)
         refreshToolbarItem("horizontal")
+        refreshCoverFlow(horizontalCoverFlow)
         prefetch()
     }
 
     @objc func toggleLoop() {
         loop.toggle()
         refreshToolbarItem("loop")
+        refreshCoverFlow()
         prefetch()
     }
 
@@ -149,6 +174,53 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         polling.toggle()
         refreshToolbarItem("poll")
         updatePolling()
+    }
+
+    @objc func toggleHorizontalCoverFlow() { toggleCoverFlow(horizontalCoverFlow) }
+    @objc func toggleVerticalCoverFlow() { toggleCoverFlow(verticalCoverFlow) }
+
+    private func toggleCoverFlow(_ strip: CoverFlowStrip) {
+        strip.isHidden.toggle()
+        if strip.isHidden { strip.show([:]) }
+        else { refreshCoverFlow(strip) }
+        window?.makeFirstResponder(canvas)
+    }
+
+    private func refreshCoverFlow() {
+        refreshCoverFlow(horizontalCoverFlow)
+        refreshCoverFlow(verticalCoverFlow)
+    }
+
+    private func refreshCoverFlow(_ strip: CoverFlowStrip) {
+        guard !strip.isHidden else { return }
+        guard let current else { strip.show([:]); return }
+        if coverFlowThumbnail == nil, let image = canvas.image {
+            coverFlowThumbnail = ImagePipeline.thumbnail(from: image)
+        }
+        let order = strip.orientation == .vertical ? vertical : horizontal
+        var records = [0: current]
+        var seen = Set([current.id])
+        var previous = current.id
+        var next = current.id
+        for distance in 1...CoverFlowStrip.neighborsPerSide {
+            if let id = catalog.neighbor(previous, order: order, forward: true, loop: loop),
+               let record = catalog[id], seen.insert(id).inserted {
+                records[-distance] = record
+                previous = id
+            }
+            if let id = catalog.neighbor(next, order: order, forward: false, loop: loop),
+               let record = catalog[id], seen.insert(id).inserted {
+                records[distance] = record
+                next = id
+            }
+        }
+        strip.show(records, centerThumbnail: coverFlowThumbnail)
+    }
+
+    private func selectCoverFlowImage(_ id: String) {
+        window?.makeFirstResponder(canvas)
+        guard id != intended, let record = catalog[id] else { return }
+        request(record, order: nil, forward: true)
     }
 
     @objc func fitImage() { canvas.fit() }
@@ -390,6 +462,8 @@ final class Viewer: NSWindowController, NSWindowDelegate {
                 }
             }
             if cacheInvalidated {
+                horizontalCoverFlow.show([:])
+                verticalCoverFlow.show([:])
                 let updated = [intended, current?.id].compactMap { $0.flatMap { catalog[$0] } }.first
                 cancel(&loadTask)
                 if let updated {
@@ -528,6 +602,8 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         window?.representedURL = record.url
         canvas.show(decoded.image, reset: true)
         canvas.setAccessibilityLabel(record.url.lastPathComponent)
+        coverFlowThumbnail = nil
+        refreshCoverFlow()
         let now = ProcessInfo.processInfo.systemUptime
         displayTimes.removeAll { now - $0 > 1 }
         displayTimes.append(now)
@@ -583,10 +659,12 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     private func clearImage() {
         imageWork.end()
         current = nil
+        coverFlowThumbnail = nil
         window?.title = "YeeX"
         window?.representedURL = nil
         canvas.show(nil, reset: true)
         canvas.setAccessibilityLabel("Image viewer")
+        refreshCoverFlow()
         refreshMetadata()
     }
 
@@ -625,6 +703,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     private func updateStatus() {
         countStatus.stringValue = "Count: \(catalog.count)"
         refreshToolbarItem(Self.watchToolbarIdentifier.rawValue)
+        refreshCoverFlow()
     }
 
     func saveFrame() { window?.saveFrame(usingName: "YeeX Viewer") }
@@ -639,6 +718,8 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         cancel(&metadataWorker)
         imageWork.end()
         folderWork.end()
+        horizontalCoverFlow.show([:])
+        verticalCoverFlow.show([:])
         canvas.stopScrollDecay()
         (NSApp.delegate as? Application)?.didClose(self)
     }
@@ -870,6 +951,10 @@ extension Viewer: NSMenuItemValidation {
             menuItem.state = freeScroll ? .on : .off
         case #selector(togglePolling):
             menuItem.state = polling ? .on : .off
+        case #selector(toggleHorizontalCoverFlow):
+            menuItem.state = horizontalCoverFlow.isHidden ? .off : .on
+        case #selector(toggleVerticalCoverFlow):
+            menuItem.state = verticalCoverFlow.isHidden ? .off : .on
         default:
             break
         }

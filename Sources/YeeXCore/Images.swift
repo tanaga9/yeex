@@ -56,12 +56,31 @@ public enum ImageDecoder {
         if ext == "svg" || ext == "svgz" { return vector(url, compressed: ext == "svgz") }
         if ["wbmp", "xbm", "xpm"].contains(ext) { return LegacyBitmaps.decode(url).map(still) }
         if ImageFormats.isPixelmator(url) {
-            let options = [kCGImageSourceShouldCache: false] as CFDictionary
-            guard let preview = PixelmatorPreview.read(url),
-                  let source = CGImageSourceCreateWithData(preview as CFData, options) else { return nil }
-            return decode(source, extension: ext, frame: frame)
+            return pixelmatorSource(url).flatMap { decode($0, extension: ext, frame: frame) }
         }
         return fileSource(url).flatMap { decode($0, extension: ext, frame: frame) }
+    }
+
+    fileprivate static func thumbnail(_ url: URL, maxPixelSize: Int) -> DecodedImage? {
+        let ext = url.pathExtension.lowercased()
+        if ext == "pdf" { return pdf(url, maxPixelSize: maxPixelSize) }
+        if ext == "svg" || ext == "svgz" {
+            return vector(url, compressed: ext == "svgz", maxPixelSize: maxPixelSize)
+        }
+        let source = ImageFormats.isPixelmator(url) ? pixelmatorSource(url) : fileSource(url)
+        guard let source else { return nil }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary).map(still)
+    }
+
+    private static func pixelmatorSource(_ url: URL) -> CGImageSource? {
+        guard let preview = PixelmatorPreview.read(url) else { return nil }
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        return CGImageSourceCreateWithData(preview as CFData, options)
     }
 
     fileprivate static func fileSource(_ url: URL) -> CGImageSource? {
@@ -121,7 +140,7 @@ public enum ImageDecoder {
         DecodedImage(image: image, frameCount: 1, frameDelay: 0, loopCount: nil)
     }
 
-    private static func vector(_ url: URL, compressed: Bool) -> DecodedImage? {
+    private static func vector(_ url: URL, compressed: Bool, maxPixelSize: Int = 4096) -> DecodedImage? {
         let image: NSImage?
         if compressed {
             guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 32 << 20,
@@ -132,7 +151,7 @@ public enum ImageDecoder {
         guard let image else { return nil }
         let largest = max(image.size.width, image.size.height)
         guard largest.isFinite, largest > 0 else { return nil }
-        let scale = min(1, 4096 / largest)
+        let scale = min(1, CGFloat(maxPixelSize) / largest)
         var bounds = CGRect(x: 0, y: 0, width: image.size.width * scale, height: image.size.height * scale)
         guard let raster = image.cgImage(forProposedRect: &bounds, context: nil, hints: nil) else { return nil }
         let width = max(1, Int(ceil(image.size.width * scale)))
@@ -146,14 +165,14 @@ public enum ImageDecoder {
         return context.makeImage().map(still)
     }
 
-    private static func pdf(_ url: URL) -> DecodedImage? {
+    private static func pdf(_ url: URL, maxPixelSize: Int = 4096) -> DecodedImage? {
         guard let page = CGPDFDocument(url as CFURL)?.page(at: 1) else { return nil }
         let box = page.getBoxRect(.cropBox)
         let rotated = abs(page.rotationAngle) % 180 == 90
         let width = rotated ? box.height : box.width
         let height = rotated ? box.width : box.height
         guard width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
-        let scale = min(2, 4096 / max(width, height))
+        let scale = min(2, CGFloat(maxPixelSize) / max(width, height))
         let w = max(1, Int(ceil(width * scale)))
         let h = max(1, Int(ceil(height * scale)))
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8,
@@ -169,6 +188,65 @@ public enum ImageDecoder {
 }
 
 public actor ImagePipeline {
+    private static let thumbnailQueue = DispatchQueue(label: "YeeX thumbnails", qos: .utility)
+    private static let thumbnailCache = OSAllocatedUnfairLock(initialState: ThumbnailCache())
+    private static let thumbnailSize = 192
+
+    public static func thumbnail(_ record: ImageRecord) async -> CGImage? {
+        let key = Key(record)
+        // Look up the cache on the serial queue so concurrent requests share the decode.
+        while !Task.isCancelled {
+            let result: ThumbnailResult? = await DecodeLane.run(on: thumbnailQueue) {
+                let cached = thumbnailCache.withLock { cache -> CGImage? in
+                    if let image = cache.images[key] { return image }
+                    cache.decoding = key
+                    return nil
+                }
+                if let cached { return .ready(cached) }
+                let image = ImageDecoder.thumbnail(record.url, maxPixelSize: thumbnailSize)?.image
+                return thumbnailCache.withLock { cache in
+                    guard cache.decoding == key else { return .invalidated }
+                    cache.decoding = nil
+                    if let image {
+                        if cache.order.count == 48 { cache.images.removeValue(forKey: cache.order.removeFirst()) }
+                        cache.images[key] = image
+                        cache.order.append(key)
+                    }
+                    return .ready(image)
+                }
+            }
+            guard !Task.isCancelled, let result else { return nil }
+            if case .ready(let image) = result { return image }
+        }
+        return nil
+    }
+
+    public static func thumbnail(from image: CGImage) -> CGImage? {
+        let longestEdge = max(image.width, image.height)
+        guard longestEdge > thumbnailSize else { return image }
+        let scale = CGFloat(thumbnailSize) / CGFloat(longestEdge)
+        let width = max(1, Int((CGFloat(image.width) * scale).rounded()))
+        let height = max(1, Int((CGFloat(image.height) * scale).rounded()))
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                      bytesPerRow: 0, space: colorSpace,
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+
+    private struct ThumbnailCache {
+        var images: [Key: CGImage] = [:]
+        var order: [Key] = []
+        var decoding: Key?
+    }
+
+    private enum ThumbnailResult: Sendable {
+        case ready(CGImage?)
+        case invalidated
+    }
+
     private struct Key: Hashable, Sendable {
         let path: String
         let modified: Date
@@ -176,6 +254,15 @@ public actor ImagePipeline {
         let identity: String
         let frame: Int
         let playback: UUID?
+
+        init(_ record: ImageRecord, frame: Int = 0, playback: UUID? = nil) {
+            path = record.id
+            modified = record.modified
+            size = record.size
+            identity = record.identity
+            self.frame = frame
+            self.playback = playback
+        }
     }
 
     private struct Cached {
@@ -209,10 +296,15 @@ public actor ImagePipeline {
         invalidate { ($0.path as NSString).deletingLastPathComponent == path }
     }
 
-    private func invalidate(where matches: (Key) -> Bool) {
+    private func invalidate(where matches: @Sendable (Key) -> Bool) {
         cacheGeneration &+= 1
         for key in cache.keys.filter(matches) {
             if let removed = cache.removeValue(forKey: key) { bytes -= removed.image.byteCount }
+        }
+        Self.thumbnailCache.withLock { cache in
+            if let decoding = cache.decoding, matches(decoding) { cache.decoding = nil }
+            for key in cache.order.filter(matches) { cache.images.removeValue(forKey: key) }
+            cache.order.removeAll(where: matches)
         }
     }
 
@@ -220,8 +312,7 @@ public actor ImagePipeline {
                       refresh: Bool = false, playback: AnimationPlayback? = nil) async -> DecodedImage? {
         guard !Task.isCancelled else { return nil }
         let playback = playback.flatMap { $0.url == record.url ? $0 : nil }
-        let key = Key(path: record.id, modified: record.modified, size: record.size,
-                      identity: record.identity, frame: frame, playback: playback?.id)
+        let key = Key(record, frame: frame, playback: playback?.id)
         access &+= 1
         if !refresh, let cached = cache[key] {
             cache[key]?.access = access
@@ -259,14 +350,18 @@ private final class DecodeLane: Sendable {
     }
 
     func run(url: URL, frame: Int, playback: AnimationPlayback?) async -> DecodedImage? {
+        await Self.run(on: queue) {
+            if let playback { return playback.decode(frame: frame) }
+            return self.decode(url, frame)
+        }
+    }
+
+    static func run<T: Sendable>(on queue: DispatchQueue, decode: @escaping @Sendable () -> T?) async -> T? {
         let cancelled = OSAllocatedCancellation()
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 queue.async {
-                    let image = cancelled.value ? nil : autoreleasepool {
-                        if let playback { return playback.decode(frame: frame) }
-                        return self.decode(url, frame)
-                    }
+                    let image = cancelled.value ? nil : autoreleasepool(invoking: decode)
                     continuation.resume(returning: image)
                 }
             }

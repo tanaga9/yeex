@@ -13,6 +13,7 @@ final class Canvas: NSView {
 
     init() {
         super.init(frame: .zero)
+        clipsToBounds = true
         registerForDraggedTypes([.fileURL])
         setAccessibilityElement(true)
         setAccessibilityRole(.image)

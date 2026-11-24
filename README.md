@@ -37,6 +37,7 @@ GitHub may require Workflows write permission when creating a tag for an older c
 | --- | --- |
 | Open an image or folder | ⌘O or ⇧⌘O, or drag and drop |
 | Browse images | Arrow keys, mouse wheel, or trackpad |
+| Browse compact thumbnail strips | Both strips are shown by default. Scroll or click a thumbnail. Toggle each strip in the View menu. |
 | Change the vertical or horizontal sort order | V or H in the toolbar, or Vertical Sort or Horizontal Sort in the View menu |
 | Toggle looping, free scrolling, or polling | Loop, Free Scroll, or Poll in the toolbar or View menu |
 | Zoom and pan | `+` or `-`, pinch, or scroll and drag while zoomed in |
@@ -44,6 +45,8 @@ GitHub may require Workflows write permission when creating a tag for an older c
 | Fit the window to the image | Double-click the image |
 | Copy or move an image | ⌘1–9 or ⇧1–9 |
 | Show Info or reload the folder | ⌘I or ⌘R |
+
+Each Cover Flow strip shows up to three images before and three after the selection, depending on available space. WBMP, XBM, and XPM show placeholders in the surrounding slots. Select one of these files to display it in the main viewer. The center thumbnail is generated from the displayed image.
 
 Set folders in the Copy Destinations and Move Destinations panels. Right-click a destination to change or clear it. If the destination already contains a folder or image package with the same name, use **Keep Both** to save under a new name.
 

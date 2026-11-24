@@ -97,6 +97,8 @@ final class Application: NSObject, NSApplicationDelegate {
         view.addItem(withTitle: "Actual Size", action: #selector(Viewer.actualSize), keyEquivalent: "1").keyEquivalentModifierMask = [.command, .option]
         view.addItem(withTitle: "Fit Window to Image", action: #selector(Viewer.fitWindow), keyEquivalent: "")
         view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f").keyEquivalentModifierMask = [.command, .control]
+        view.addItem(withTitle: "Horizontal Cover Flow", action: #selector(Viewer.toggleHorizontalCoverFlow), keyEquivalent: "")
+        view.addItem(withTitle: "Vertical Cover Flow", action: #selector(Viewer.toggleVerticalCoverFlow), keyEquivalent: "")
         view.addItem(.separator())
         view.addItem(withTitle: "Vertical Sort", action: #selector(Viewer.cycleVertical), keyEquivalent: "")
         view.addItem(withTitle: "Horizontal Sort", action: #selector(Viewer.cycleHorizontal), keyEquivalent: "")

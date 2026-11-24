@@ -444,6 +444,31 @@ func refreshPreventsAnOlderDecodeFromRepopulatingTheCache(invalidateFolder: Bool
     #expect(await matchingBudget.image(record, prefetch: true)?.image.width == 32)
 }
 
+@Test(arguments: [false, true])
+func thumbnailsShareDecodesAndRespectReload(invalidateFolder: Bool) async throws {
+    let folder = try makeTempDirectory()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    let url = folder.appendingPathComponent("image.png")
+    try FileManager.default.copyItem(at: fixture("red.png"), to: url)
+    let record = try FolderScanner.record(at: url, seed: UUID())
+    let otherViewerRecord = try FolderScanner.record(at: url, seed: UUID())
+    async let first = ImagePipeline.thumbnail(record)
+    async let second = ImagePipeline.thumbnail(otherViewerRecord)
+    let (firstResult, secondResult) = await (first, second)
+    let original = try #require(firstResult)
+    #expect(original === secondResult)
+
+    let pipeline = ImagePipeline()
+    if invalidateFolder {
+        await pipeline.invalidateImages(in: folder)
+    } else {
+        _ = await pipeline.image(record, refresh: true)
+    }
+    let refreshed = try #require(await ImagePipeline.thumbnail(record))
+    #expect(refreshed !== original)
+    #expect(await ImagePipeline.thumbnail(otherViewerRecord) === refreshed)
+}
+
 @Test func watchEventsDuringScanRequestOneFollowUp() {
     var observer = FolderObservation()
     observer.begin()
