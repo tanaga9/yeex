@@ -11,7 +11,6 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     private let root = NSStackView()
     private let body = NSStackView()
     private let status = NSTextField(labelWithString: "")
-    private let watchStatus = NSTextField(labelWithString: "")
     private let countStatus = NSTextField(labelWithString: "")
     private let rateStatus = NSTextField(labelWithString: "")
     private let info = DetailPanel(title: "Info")
@@ -96,11 +95,12 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         toolbar.autosavesConfiguration = true
         window.toolbarStyle = .unified
         window.toolbar = toolbar
+        migrateWatchToolbarItem(in: toolbar)
 
         let footer = NSStackView()
         footer.spacing = 14
         footer.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
-        for label in [status, watchStatus, rateStatus, countStatus] {
+        for label in [status, rateStatus, countStatus] {
             label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
             label.textColor = .secondaryLabelColor
             label.lineBreakMode = .byTruncatingTail
@@ -108,7 +108,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         }
         status.setContentHuggingPriority(.defaultLow, for: .horizontal)
         status.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        for label in [watchStatus, rateStatus, countStatus] {
+        for label in [rateStatus, countStatus] {
             label.setContentHuggingPriority(.required, for: .horizontal)
             label.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
@@ -602,8 +602,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
 
     private func updateStatus() {
         countStatus.stringValue = "Count: \(catalog.count)"
-        watchStatus.stringValue = folderWork.observation.requiresReload && !folderWork.observation.scanning
-            ? "Reload required" : "Watch: \(folderWork.watch == nil ? "-" : "w")\(folderWork.poll == nil ? "-" : "p")"
+        refreshToolbarItem(Self.watchToolbarIdentifier.rawValue)
     }
 
     func saveFrame() { window?.saveFrame(usingName: "YeeX Viewer") }
@@ -692,7 +691,13 @@ private struct MetadataRequest: Sendable {
 }
 
 extension Viewer: NSToolbarDelegate {
-    private static let toolbarItems = ["open", "reload", "copy", "move", "info", "fit", "vertical", "horizontal", "loop", "free", "poll"]
+    private static let watchToolbarIdentifier = NSToolbarItem.Identifier("watch")
+    private static let watchToolbarMigrationKey = "YeeXWatchToolbarItemIntroduced"
+    private static let watchToolbarPriority = NSToolbarItem.VisibilityPriority(
+        rawValue: NSToolbarItem.VisibilityPriority.high.rawValue + 1
+    )
+    private static let toolbarItems = ["open", "reload", "copy", "move", "info", "fit", "vertical", "horizontal",
+                                       "loop", "free", watchToolbarIdentifier.rawValue, "poll"]
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar) + [.space, .flexibleSpace]
@@ -702,9 +707,36 @@ extension Viewer: NSToolbarDelegate {
         Self.toolbarItems.map { NSToolbarItem.Identifier($0) }
     }
 
+    private func migrateWatchToolbarItem(in toolbar: NSToolbar) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: Self.watchToolbarMigrationKey) else { return }
+        if !toolbar.itemIdentifiers.contains(Self.watchToolbarIdentifier),
+           let index = toolbar.itemIdentifiers.firstIndex(of: NSToolbarItem.Identifier("poll")) {
+            toolbar.insertItem(withItemIdentifier: Self.watchToolbarIdentifier, at: index)
+        }
+        defaults.set(true, forKey: Self.watchToolbarMigrationKey)
+    }
+
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         let item = NSToolbarItem(itemIdentifier: id)
+        if id == Self.watchToolbarIdentifier {
+            let indicator = NSTextField(labelWithString: "W● P● !")
+            indicator.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+            indicator.widthAnchor.constraint(equalToConstant: ceil(indicator.intrinsicContentSize.width)).isActive = true
+            item.view = indicator
+            item.paletteLabel = "Watch Status"
+            item.isBordered = false
+            item.autovalidates = false
+            item.visibilityPriority = Self.watchToolbarPriority
+            if flag {
+                updateToolbarItem(item)
+            } else {
+                indicator.stringValue = "W○ P○"
+                item.menuFormRepresentation = NSMenuItem(title: indicator.stringValue, action: nil, keyEquivalent: "")
+            }
+            return item
+        }
         let command: (label: String, symbol: String, action: Selector, help: String?)
         switch id.rawValue {
         case "open": command = ("Open Folder", "folder", #selector(openFolderToolbar), nil)
@@ -735,6 +767,7 @@ extension Viewer: NSToolbarDelegate {
         item.image = NSImage(systemSymbolName: command.symbol, accessibilityDescription: help)
         item.target = self
         item.action = command.action
+        if id.rawValue == "poll" { item.visibilityPriority = Self.watchToolbarPriority }
         if flag {
             updateToolbarItem(item)
         }
@@ -749,6 +782,21 @@ extension Viewer: NSToolbarDelegate {
 
     private func updateToolbarItem(_ item: NSToolbarItem) {
         switch item.itemIdentifier.rawValue {
+        case Self.watchToolbarIdentifier.rawValue:
+            let watching = folderWork.watch != nil
+            let pollingNow = folderWork.poll != nil
+            let needsReload = folderWork.observation.requiresReload && !folderWork.observation.scanning
+            let watch = watching ? "Running" : "Stopped"
+            let poll = pollingNow ? "Running" : (polling ? "Stopped" : "Off")
+            let reload = needsReload ? "\nReload required. Use Reload Current Folder (⌘R)." : ""
+            let details = "Watch: \(watch)\nPoll: \(poll)\(reload)"
+            guard item.toolTip != details, let indicator = item.view as? NSTextField else { return }
+            let watchMark = watching ? "●" : "○"
+            let pollMark = pollingNow ? "●" : "○"
+            indicator.stringValue = "W\(watchMark) P\(pollMark)\(needsReload ? " !" : "")"
+            item.toolTip = details
+            indicator.setAccessibilityLabel(details)
+            item.menuFormRepresentation = NSMenuItem(title: indicator.stringValue, action: nil, keyEquivalent: "")
         case "vertical", "horizontal":
             let isVertical = item.itemIdentifier.rawValue == "vertical"
             let order = isVertical ? vertical : horizontal
