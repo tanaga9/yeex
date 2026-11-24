@@ -88,7 +88,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         canvasColumn.detachesHiddenViews = true
         canvasColumn.setContentHuggingPriority(.defaultLow, for: .horizontal)
         canvasColumn.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let imageArea = NSStackView(views: [verticalCoverFlow, canvasColumn])
+        let imageArea = NSStackView(views: [canvasColumn, verticalCoverFlow])
         imageArea.orientation = .horizontal
         imageArea.alignment = .height
         imageArea.spacing = 0

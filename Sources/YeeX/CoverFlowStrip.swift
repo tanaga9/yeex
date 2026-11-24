@@ -49,7 +49,7 @@ final class CoverFlowStrip: NSView {
         dirtyRect.intersection(bounds).fill()
         NSColor(white: 1, alpha: 0.09).setFill()
         let edge = orientation == .vertical
-            ? NSRect(x: bounds.maxX - 1, y: 0, width: 1, height: bounds.height)
+            ? NSRect(x: bounds.minX, y: 0, width: 1, height: bounds.height)
             : NSRect(x: 0, y: bounds.maxY - 1, width: bounds.width, height: 1)
         edge.fill()
     }
