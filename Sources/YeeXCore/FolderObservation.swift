@@ -7,7 +7,7 @@ public struct FolderObservation {
     public private(set) var requiresReload = false
     private var retrying = false
     private var snapshot: Set<String>?
-    private var checkOverlap = false
+    private var changedDuringScan = false
     private var idlePolls = 0
 
     public init() {}
@@ -15,41 +15,39 @@ public struct FolderObservation {
     public mutating func begin() {
         retrying = retrying || requiresReload
         requiresReload = false
+        changedDuringScan = false
         scanning = true
     }
 
-    public mutating func finish(_ result: ScanResult?) {
+    /// Return true if a successful scan should be followed by another scan.
+    public mutating func finish(_ result: ScanResult?) -> Bool {
         scanning = false
         if let result {
             snapshot = result.candidateNames
-            checkOverlap = true
         } else {
-            requiresReload = requiresReload || retrying
+            requiresReload = retrying || changedDuringScan
         }
+        let scanAgain = result != nil && changedDuringScan
+        changedDuringScan = false
         idlePolls = 0
         retrying = false
+        return scanAgain
     }
 
     /// Return true if an automatic scan should begin.
     public mutating func changed() -> Bool {
-        if scanning { requiresReload = true }
+        if scanning { changedDuringScan = true }
         return !scanning && !requiresReload
     }
 
     public mutating func poll(_ names: Set<String>) -> PollAction {
         guard !scanning, !requiresReload else { return .requireReload }
-        let firstAfterScan = checkOverlap
-        checkOverlap = false
         guard let previous = snapshot else {
             snapshot = names
             return .keepPolling
         }
         if names != previous {
             idlePolls = 0
-            if firstAfterScan {
-                requiresReload = true
-                return .requireReload
-            }
             return .scan
         }
         idlePolls += 1

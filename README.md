@@ -63,7 +63,7 @@ YEEX_BENCHMARK_FOLDER=/path/to/test-images ./Scripts/test.sh -c release --filter
 | Area | Coverage |
 | --- | --- |
 | Folder scanning and sort order | Incremental single-pass scans, independent axis orders, navigation directions and wrapping, UUIDv5 random order, and insertion and removal in a 30,000-entry index |
-| Change detection | Changes during scans require a manual reload, and failed scans preserve the last polling baseline |
+| Change detection | Watch events during a successful scan queue a follow-up scan, the first Poll difference triggers a scan, and failed scans preserve the last polling baseline |
 | Image formats | Samples for PNG, JPEG, BMP, ICO, TGA, TIFF, AVIF, PNM, GIF and WebP animation frames, PDF, SVG and SVGZ, X11 bitmaps, and PXD and PXM previews |
 | AI generation metadata | PNG text and JPEG and WebP EXIF, including Unicode comments, ComfyUI graphs, and Stable Diffusion parameters |
 | Copy and move | Collision handling, saving under a new name, and explicit replacement |

@@ -34,7 +34,8 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     private var loadTask: Task<Void, Never>?
     private var scanned = Set<String>()
     private var refreshAfterScan: String?
-    private var failed = Set<String>()
+    private var failedDecodes: [String: ImageRecord] = [:]
+    private var movedDuringScan = Set<String>()
     private var current: ImageRecord?
     private var intended: String?
     private var displayTimes: [TimeInterval] = []
@@ -284,7 +285,8 @@ final class Viewer: NSWindowController, NSWindowDelegate {
 
     private func presentExplicit(_ record: ImageRecord, decoded: DecodedImage) {
         cancel(&loadTask)
-        failed.remove(record.id)
+        failedDecodes.removeValue(forKey: record.id)
+        movedDuringScan.remove(record.id)
         catalog.upsert(record)
         display(record, decoded, continueForward: nil)
     }
@@ -301,15 +303,22 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         beginScan(refreshCurrent: false)
     }
 
-    @objc func reload() { if folderWork.scan == nil { beginScan(invalidateCache: true) } }
+    @objc func reload() {
+        guard !isClosed, folder != nil else { return }
+        folderWork.reloadPending = true
+        if folderWork.scan == nil { beginScan() }
+    }
 
-    private func beginScan(refreshCurrent: Bool = true, invalidateCache: Bool = false) {
+    private func beginScan(refreshCurrent: Bool = true) {
         guard !isClosed, let folder else { return }
+        let invalidateCache = folderWork.reloadPending
+        folderWork.reloadPending = false
         refreshAfterScan = refreshCurrent ? current?.id : nil
         let generation = folderWork.startScan()
         let seed = self.seed
         scanned.removeAll(keepingCapacity: true)
-        failed.removeAll(keepingCapacity: true)
+        failedDecodes.removeAll(keepingCapacity: true)
+        movedDuringScan.removeAll(keepingCapacity: true)
         emptyMessage = "Scanning folder…"
         canvas.needsDisplay = true
         message("Scanning \(folder.lastPathComponent)…", persistent: true)
@@ -357,7 +366,9 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         guard generation == folderWork.generation else { return }
         for record in records {
             scanned.insert(record.id)
-            if !failed.contains(record.id) { catalog.upsert(record) }
+            if !movedDuringScan.contains(record.id), failedDecodes[record.id] != record {
+                catalog.upsert(record)
+            }
         }
         if current == nil, loadTask == nil { loadFirst() }
         updateStatus()
@@ -367,7 +378,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
                             cacheInvalidated: Bool = false) {
         guard generation == folderWork.generation else { return }
         folderWork.scan = nil
-        folderWork.observation.finish(result)
+        let scanAgain = folderWork.observation.finish(result) || folderWork.reloadPending
         if result != nil {
             for id in Array(catalog.ids) where !scanned.contains(id) { catalog.remove(id) }
             if let current, catalog[current.id] == nil {
@@ -386,18 +397,24 @@ final class Viewer: NSWindowController, NSWindowDelegate {
                 } else {
                     intended = nil
                 }
-            } else if loadTask == nil, let current, current.id == refreshAfterScan, let updated = catalog[current.id] {
+            } else if loadTask == nil, let current, let updated = catalog[current.id],
+                      updated != current || (!scanAgain && current.id == refreshAfterScan) {
                 request(updated, order: nil, forward: true, refresh: true)
             }
         }
         scanned.removeAll(keepingCapacity: true)
         refreshAfterScan = nil
+        if scanAgain {
+            beginScan()
+            return
+        }
         if loadTask == nil { prefetch() }
         if current == nil, loadTask == nil { loadFirst() }
         emptyMessage = error == nil ? "No readable images in this folder" : "Unable to scan this folder"
         canvas.needsDisplay = true
         if folderWork.observation.requiresReload {
-            message("Folder changed during scan. Use Reload Current Folder.", persistent: true)
+            let reason = error.map { "Unable to finish folder scan: \($0)." } ?? "Unable to finish folder scan."
+            message("\(reason) Use Reload Current Folder.", persistent: true)
         } else {
             message(error.map { "Unable to finish folder scan: \($0)" } ?? "Scan complete")
         }
@@ -434,7 +451,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         case .scan: beginScan()
         case .requireReload:
             folderWork.poll = nil
-            message("Folder changed during scan. Use Reload Current Folder.", persistent: true)
+            message("Use Reload Current Folder.", persistent: true)
             updateStatus()
         case .idle:
             folderWork.poll = nil
@@ -471,14 +488,19 @@ final class Viewer: NSWindowController, NSWindowDelegate {
             while let next = candidate {
                 let image = await imagePipeline.image(next, refresh: refresh && next.id == record.id)
                 guard !Task.isCancelled else { return }
-                if let image, catalog[next.id] != nil {
+                let latest = catalog[next.id]
+                if let latest, latest != next {
+                    candidate = latest
+                    continue
+                }
+                if let image, latest != nil {
                     loadTask = nil
                     display(next, image, continueForward: order.map { ($0, forward) })
                     return
                 }
                 let currentID = current?.id
                 let neighbor = order.flatMap { catalog.neighbor(next.id, order: $0, forward: forward, loop: loop) }
-                failed.insert(next.id)
+                if latest != nil { failedDecodes[next.id] = next }
                 catalog.remove(next.id)
                 if next.id == currentID { clearImage() }
                 candidate = (order == nil && current == nil ? catalog.first(.mtime) : neighbor)
@@ -490,7 +512,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
                 }
                 intended = candidate?.id
                 updateStatus()
-                await Task.yield()
+                if candidate != nil { await Task.yield() }
             }
             guard !Task.isCancelled else { return }
             intended = current?.id
@@ -572,7 +594,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         guard !isClosed else { return }
         let down = catalog.neighbor(record.id, order: vertical, forward: false, loop: loop)
         let up = catalog.neighbor(record.id, order: vertical, forward: true, loop: loop)
-        if folderWork.observation.scanning { failed.insert(record.id) }
+        if folderWork.observation.scanning { movedDuringScan.insert(record.id) }
         catalog.remove(record.id)
         if current?.id == record.id {
             cancel(&loadTask)
@@ -652,6 +674,7 @@ private struct FolderWork {
     var poll: Task<Void, Never>?
     var watch: DispatchSourceFileSystemObject?
     var observation = FolderObservation()
+    var reloadPending = false
     private(set) var generation = UUID()
 
     mutating func startScan() -> UUID {

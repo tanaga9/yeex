@@ -444,32 +444,50 @@ func refreshPreventsAnOlderDecodeFromRepopulatingTheCache(invalidateFolder: Bool
     #expect(await matchingBudget.image(record, prefetch: true)?.image.width == 32)
 }
 
-@Test func overlapRequiresManualReloadAndFailedRetryPreservesIt() {
+@Test func watchEventsDuringScanRequestOneFollowUp() {
+    var observer = FolderObservation()
+    observer.begin()
+    let first = observer.changed()
+    let second = observer.changed()
+    #expect(!first && !second)
+    #expect(!observer.requiresReload)
+    let scanAgain = observer.finish(ScanResult(candidateNames: ["a.png"]))
+    #expect(scanAgain)
+    observer.begin()
+    let repeatScan = observer.finish(ScanResult(candidateNames: ["a.png", "b.png"]))
+    #expect(!repeatScan)
+    #expect(!observer.requiresReload)
+    #expect(observer.poll(["a.png", "b.png"]) == .keepPolling)
+}
+
+@Test func failedScanWithPendingChangeStillAllowsManualRecovery() {
     var observer = FolderObservation()
     observer.begin()
     let duringScan = observer.changed()
     #expect(!duringScan)
-    observer.finish(ScanResult(candidateNames: ["a.png"]))
+    let scanAgain = observer.finish(nil)
+    #expect(!scanAgain)
     #expect(observer.requiresReload)
     let whileReloadRequired = observer.changed()
     #expect(!whileReloadRequired)
     observer.begin()
-    observer.finish(nil)
+    _ = observer.finish(nil)
     #expect(observer.requiresReload)
     observer.begin()
-    observer.finish(ScanResult(candidateNames: ["a.png", "b.png"]))
+    _ = observer.finish(ScanResult(candidateNames: ["a.png", "b.png"]))
     #expect(!observer.requiresReload)
-    #expect(observer.poll(["a.png"]) == .requireReload)
+    #expect(observer.poll(["a.png"]) == .scan)
 }
 
 @Test func pollRetainsLastSuccessfulBaseline() {
     var observer = FolderObservation()
     observer.begin()
-    observer.finish(ScanResult(candidateNames: ["a.png"]))
+    _ = observer.finish(ScanResult(candidateNames: ["a.png"]))
+    #expect(observer.poll(["a.png", "b.png"]) == .scan)
     #expect(observer.poll(["a.png"]) == .keepPolling)
     #expect(observer.poll(["b.png"]) == .scan)
     observer.begin()
-    observer.finish(nil)
+    _ = observer.finish(nil)
     #expect(observer.poll(["b.png"]) == .scan)
 }
 
