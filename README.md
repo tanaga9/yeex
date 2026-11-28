@@ -39,7 +39,8 @@ GitHub may require Workflows write permission when creating a tag for an older c
 | Browse images | Arrow keys, mouse wheel, or trackpad |
 | Browse compact thumbnail strips | Both strips are shown by default, below and to the right of the image. Scroll or click a thumbnail. Toggle each strip in the View menu. |
 | Change the vertical or horizontal sort order | V or H in the toolbar, or Vertical Sort or Horizontal Sort in the View menu |
-| Toggle looping, free scrolling, or polling | Loop, Free Scroll, or Poll in the toolbar or View menu |
+| Toggle looping or polling | Loop or Poll in the toolbar or View menu |
+| Toggle Free Scroll | View menu |
 | Zoom and pan | `+` or `-`, pinch, or scroll and drag while zoomed in |
 | Fit the image to the window or show it at actual size | ⌘0 or ⌥⌘1 |
 | Fit the window to the image | Double-click the image |

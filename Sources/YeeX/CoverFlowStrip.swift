@@ -4,6 +4,7 @@ import YeeXCore
 @MainActor
 final class CoverFlowStrip: NSView {
     static let neighborsPerSide = 3
+    private static let scrollStep: CGFloat = 46
 
     let orientation: NSUserInterfaceLayoutOrientation
     var selectImage: ((String) -> Void)?
@@ -13,7 +14,9 @@ final class CoverFlowStrip: NSView {
     private var centerThumbnail: CGImage?
     private var tiles: [String: CoverTile] = [:]
     private var loading: Task<Void, Never>?
-    private var scrollRemainder: CGFloat = 0
+    private let scrollNavigation = ScrollNavigation(isFree: { true })
+    private var scrollTravel: CGFloat = 0
+    private var lastScrollTimestamp: TimeInterval?
 
     init(orientation: NSUserInterfaceLayoutOrientation) {
         self.orientation = orientation
@@ -24,6 +27,15 @@ final class CoverFlowStrip: NSView {
     }
 
     required init?(coder: NSCoder) { fatalError("Cover Flow strips are created in code") }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            scrollNavigation.stopDecay()
+            scrollTravel = 0
+            lastScrollTimestamp = nil
+        }
+    }
 
     override var intrinsicContentSize: NSSize {
         orientation == .vertical
@@ -142,23 +154,35 @@ final class CoverFlowStrip: NSView {
         selectImage?(sender.record.id)
     }
 
-    override func scrollWheel(with event: NSEvent) {
-        let dx = event.scrollingDeltaX
-        let dy = event.scrollingDeltaY
-        let delta = orientation == .horizontal && abs(dx) >= abs(dy) ? dx : dy
-        if event.phase == .began || event.phase == .cancelled || delta * scrollRemainder < 0 {
-            scrollRemainder = 0
-        }
-        guard delta != 0 else { return }
-        if !event.hasPreciseScrollingDeltas {
-            step?(delta > 0)
+    func scrollImages(with event: NSEvent) {
+        if event.phase.contains(.cancelled) || event.momentumPhase.contains(.cancelled) {
+            scrollNavigation.stopDecay()
+            scrollTravel = 0
+            lastScrollTimestamp = nil
             return
         }
-        scrollRemainder += delta
-        if abs(scrollRemainder) >= 46 {
-            step?(scrollRemainder > 0)
-            scrollRemainder.formTruncatingRemainder(dividingBy: 46)
+        if event.phase.contains(.began) { scrollTravel = 0 }
+
+        let dx = event.scrollingDeltaX
+        let dy = event.scrollingDeltaY
+        let input = vertical || abs(dy) > abs(dx) ? dy : dx
+        guard input != 0 else { return }
+
+        // Unphased inputs have no gesture start, so a pause separates bursts.
+        let timestamp = ProcessInfo.processInfo.systemUptime
+        if event.phase.isEmpty, event.momentumPhase.isEmpty,
+           let lastScrollTimestamp, timestamp - lastScrollTimestamp > 0.25 {
+            scrollTravel = 0
         }
+        lastScrollTimestamp = timestamp
+        let delta = event.hasPreciseScrollingDeltas ? input : (input > 0 ? Self.scrollStep : -Self.scrollStep)
+        if delta * scrollTravel < 0 { scrollTravel = 0 }
+        scrollTravel += delta
+        let travelReachedStep = abs(scrollTravel) >= Self.scrollStep
+        guard let forward = scrollNavigation.accumulate(delta, vertical: vertical, inputPerStep: Self.scrollStep,
+                                                         travelReachedStep: travelReachedStep) else { return }
+        scrollTravel = travelReachedStep ? scrollTravel.truncatingRemainder(dividingBy: Self.scrollStep) : 0
+        step?(forward)
     }
 }
 

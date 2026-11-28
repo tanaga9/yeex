@@ -7,9 +7,11 @@ final class Canvas: NSView {
     private(set) var image: CGImage?
     private var zoom: CGFloat = 1
     private var pan = CGPoint.zero
-    private var scrolling = SIMD2<Double>(repeating: 0)
-    private var lastNavigation = ProcessInfo.processInfo.systemUptime
-    private var decayTimer: Timer?
+    private lazy var scrollNavigation = ScrollNavigation(isFree: { [weak self] in
+        self?.controller?.freeScroll == true
+    }, onDecay: { [weak self] in
+        self?.needsDisplay = true
+    })
 
     init() {
         super.init(frame: .zero)
@@ -101,8 +103,8 @@ final class Canvas: NSView {
             (hint as NSString).draw(at: CGPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2),
                                     withAttributes: attributes)
         }
-        drawGauge(vertical: true, value: scrolling.y)
-        drawGauge(vertical: false, value: scrolling.x)
+        drawGauge(vertical: true, value: scrollNavigation.amount.y)
+        drawGauge(vertical: false, value: scrollNavigation.amount.x)
     }
 
     private func drawGauge(vertical: Bool, value: Double) {
@@ -146,39 +148,14 @@ final class Canvas: NSView {
             return
         }
 
-        let free = controller.freeScroll
-        let axis = vertical ? 1 : 0
-        let amount = vertical ? dy : dx
-        let sensitivity = vertical ? 2.5 : (free ? 0.5 : 0.8)
-        let limit = free ? 1000.0 : (vertical ? 120.0 : 100.0)
-        let threshold = vertical || free ? 100.0 : 80.0
-        if amount * scrolling[axis] < 0 { scrolling[axis] = 0 }
-        scrolling[axis] = max(-limit, min(limit, scrolling[axis] + amount * sensitivity))
-        let now = ProcessInfo.processInfo.systemUptime
-        if abs(scrolling[axis]) >= threshold, free || now - lastNavigation > 0.2 {
-            controller.navigate(vertical: vertical, forward: scrolling[axis] > 0)
-            scrolling[axis] /= free ? 1.1 : (vertical ? 100 : 2)
-            lastNavigation = now
+        if let forward = scrollNavigation.accumulate(vertical ? dy : dx, vertical: vertical) {
+            controller.navigate(vertical: vertical, forward: forward)
         }
-        if decayTimer == nil {
-            let timer = Timer(timeInterval: 0.05, target: self, selector: #selector(decay), userInfo: nil, repeats: true)
-            decayTimer = timer
-            RunLoop.main.add(timer, forMode: .common)
-        }
-        needsDisplay = true
-    }
-
-    @objc private func decay() {
-        scrolling.x *= controller?.freeScroll == true ? 0.9 : 0.5
-        scrolling.y *= 0.7
-        for axis in 0..<2 where abs(scrolling[axis]) < 1 { scrolling[axis] = 0 }
-        if scrolling == .zero { stopScrollDecay() }
         needsDisplay = true
     }
 
     func stopScrollDecay() {
-        decayTimer?.invalidate()
-        decayTimer = nil
+        scrollNavigation.stopDecay()
     }
 
     override func magnify(with event: NSEvent) {

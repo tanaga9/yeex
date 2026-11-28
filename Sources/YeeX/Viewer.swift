@@ -51,9 +51,9 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     var displayedRecord: ImageRecord? { current }
 
     init() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 640),
-                              styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                              backing: .buffered, defer: false)
+        let window = ViewerWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 640),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                  backing: .buffered, defer: false)
         super.init(window: window)
         window.title = "YeeX"
         window.titleVisibility = .visible
@@ -73,6 +73,24 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         super.showWindow(sender)
         window?.makeKeyAndOrderFront(sender)
         window?.makeFirstResponder(canvas)
+    }
+
+    fileprivate func routeImageScroll(_ event: NSEvent) -> Bool {
+        guard let window else { return false }
+        let position = event.locationInWindow
+        func containsPointer(_ view: NSView) -> Bool {
+            view.window === window && !view.isHiddenOrHasHiddenAncestor &&
+                view.bounds.contains(view.convert(position, from: nil))
+        }
+
+        let strips: [CoverFlowStrip] = [horizontalCoverFlow, verticalCoverFlow]
+        if let strip = strips.first(where: { containsPointer($0) }) {
+            strip.scrollImages(with: event)
+            return true
+        }
+        guard containsPointer(canvas) else { return false }
+        canvas.scrollWheel(with: event)
+        return true
     }
 
     private func buildInterface(_ window: NSWindow) {
@@ -185,7 +203,6 @@ final class Viewer: NSWindowController, NSWindowDelegate {
 
     @objc func toggleFreeScroll() {
         freeScroll.toggle()
-        refreshToolbarItem("free")
     }
 
     @objc func togglePolling() {
@@ -749,6 +766,16 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     }
 }
 
+@MainActor
+private final class ViewerWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        // AppKit can keep delivering momentum to its original view as the pointer moves.
+        if event.type == .scrollWheel, attachedSheet == nil,
+           let viewer = windowController as? Viewer, viewer.routeImageScroll(event) { return }
+        super.sendEvent(event)
+    }
+}
+
 private func cancel(_ task: inout Task<Void, Never>?) {
     task?.cancel()
     task = nil
@@ -825,7 +852,7 @@ extension Viewer: NSToolbarDelegate {
         rawValue: NSToolbarItem.VisibilityPriority.high.rawValue + 1
     )
     private static let toolbarItems = ["open", "reload", "copy", "move", "info", "fit", "vertical", "horizontal",
-                                       "loop", "free", watchToolbarIdentifier.rawValue, "poll"]
+                                       "loop", watchToolbarIdentifier.rawValue, "poll"]
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar) + [.space, .flexibleSpace]
@@ -876,7 +903,6 @@ extension Viewer: NSToolbarDelegate {
         case "vertical": command = ("V Sort", "arrow.up.and.down", #selector(cycleVertical), "Change Vertical Sort Order")
         case "horizontal": command = ("H Sort", "arrow.left.and.right", #selector(cycleHorizontal), "Change Horizontal Sort Order")
         case "loop": command = ("Loop", "repeat.circle", #selector(toggleLoop), nil)
-        case "free": command = ("Free Scroll", "hand.draw", #selector(toggleFreeScroll), nil)
         case "poll": command = ("Poll", "eye", #selector(togglePolling), nil)
         default: return nil
         }
@@ -885,7 +911,7 @@ extension Viewer: NSToolbarDelegate {
         switch id.rawValue {
         case "vertical", "horizontal":
             item.possibleLabels = Set(BrowseOrder.allCases.map { sortToolbarLabel(item, order: $0) })
-        case "loop", "free", "poll":
+        case "loop", "poll":
             item.possibleLabels = ["\(command.label): On", "\(command.label): Off"]
         default:
             break
@@ -934,8 +960,6 @@ extension Viewer: NSToolbarDelegate {
             item.visibilityPriority = .high
         case "loop":
             updateToolbarToggle(item, isOn: loop, symbol: loop ? "repeat.circle.fill" : "repeat.circle")
-        case "free":
-            updateToolbarToggle(item, isOn: freeScroll, symbol: freeScroll ? "hand.draw.fill" : "hand.draw")
         case "poll":
             updateToolbarToggle(item, isOn: polling, symbol: polling ? "eye.fill" : "eye")
         default:
