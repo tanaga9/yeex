@@ -16,15 +16,18 @@ public struct ImageRecord: Equatable, Sendable {
     public let id: String
     public let name: String
     public let modified: Date
+    let attributeModified: Date?
     public let size: Int
     public let identity: String
     let randomKey: Data
 
-    public init(url: URL, modified: Date, size: Int = 0, identity: String? = nil, seed: UUID) {
+    public init(url: URL, modified: Date, size: Int = 0, identity: String? = nil,
+                attributeModified: Date? = nil, seed: UUID) {
         self.url = url
         id = url.standardizedFileURL.path.decomposedStringWithCanonicalMapping
         name = url.lastPathComponent.decomposedStringWithCanonicalMapping
         self.modified = modified
+        self.attributeModified = attributeModified
         self.size = size
         self.identity = identity ?? id
         var hash = Insecure.SHA1()
@@ -209,7 +212,7 @@ public struct ScanResult: Sendable {
 public enum FolderScanner {
     private static let keys: Set<URLResourceKey> = [
         .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
-        .contentModificationDateKey, .fileSizeKey, .fileIdentifierKey
+        .contentModificationDateKey, .attributeModificationDateKey, .fileSizeKey, .fileIdentifierKey
     ]
 
     public static func scan(
@@ -257,7 +260,8 @@ public enum FolderScanner {
         }
         let identifier = values.fileIdentifier.flatMap { $0 > 0 ? String($0) : nil }
         return ImageRecord(url: url, modified: values.contentModificationDate ?? .distantPast,
-                           size: values.fileSize ?? 0, identity: identifier, seed: seed)
+                           size: values.fileSize ?? 0, identity: identifier,
+                           attributeModified: values.attributeModificationDate, seed: seed)
     }
 
     public static func candidateNames(in folder: URL) throws -> Set<String> {

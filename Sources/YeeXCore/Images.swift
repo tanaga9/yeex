@@ -61,7 +61,8 @@ public enum ImageDecoder {
         return fileSource(url).flatMap { decode($0, extension: ext, frame: frame) }
     }
 
-    fileprivate static func thumbnail(_ url: URL, maxPixelSize: Int) -> DecodedImage? {
+    public static func thumbnail(_ url: URL, maxPixelSize: Int) -> DecodedImage? {
+        guard maxPixelSize > 0 else { return nil }
         let ext = url.pathExtension.lowercased()
         if ext == "pdf" { return pdf(url, maxPixelSize: maxPixelSize) }
         if ext == "svg" || ext == "svgz" {
@@ -250,6 +251,7 @@ public actor ImagePipeline {
     private struct Key: Hashable, Sendable {
         let path: String
         let modified: Date
+        let attributeModified: Date?
         let size: Int
         let identity: String
         let frame: Int
@@ -258,6 +260,7 @@ public actor ImagePipeline {
         init(_ record: ImageRecord, frame: Int = 0, playback: UUID? = nil) {
             path = record.id
             modified = record.modified
+            attributeModified = record.attributeModified
             size = record.size
             identity = record.identity
             self.frame = frame

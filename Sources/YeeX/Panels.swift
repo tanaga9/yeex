@@ -224,19 +224,29 @@ extension Viewer {
     private func transfer(_ record: ImageRecord, directory: URL, mode: TransferMode) {
         transferInProgress = true
         Task { [weak self] in
-            let target = directory.appendingPathComponent(record.url.lastPathComponent)
-            let existing = await Task.detached(priority: .utility) { ImageTransfer.existingDestination(at: target) }.value
             guard let self else { return }
-            var choice: CollisionChoice = .fail
-            if let existing {
-                guard let selected = await collisionChoice(target: target, existing: existing) else {
-                    transferInProgress = false
-                    message("Transfer canceled")
+            defer { transferInProgress = false }
+            do {
+                let collision = try await Task.detached(priority: .utility) {
+                    try ImageTransfer.resolveCollision(record: record, directory: directory, mode: mode)
+                }.value
+                let choice: CollisionChoice
+                switch collision {
+                case .none:
+                    choice = .fail
+                case .existing(let existing):
+                    let target = directory.appendingPathComponent(record.url.lastPathComponent)
+                    guard let selected = await collisionChoice(target: target, existing: existing) else {
+                        message("Transfer canceled")
+                        return
+                    }
+                    choice = selected
+                case .identical(let sourceTrashed):
+                    if sourceTrashed { didMove(record) }
+                    let title = sourceTrashed ? "Original moved to Trash" : (mode == .copy ? "Copy skipped" : "Move skipped")
+                    notify(title, detail: "An identical file already exists at the destination.")
                     return
                 }
-                choice = selected
-            }
-            do {
                 let result = try await Task.detached(priority: .utility) {
                     try ImageTransfer.run(record: record, directory: directory, mode: mode, collision: choice)
                 }.value
@@ -253,7 +263,6 @@ extension Viewer {
             } catch {
                 message(error.localizedDescription)
             }
-            transferInProgress = false
         }
     }
 
@@ -271,10 +280,16 @@ extension Viewer {
     }
 
     private func collisionChoice(target: URL, existing: ExistingDestination) async -> CollisionChoice? {
+        let preview = await Task.detached(priority: .utility) {
+            Self.destinationPreview(at: target, existing: existing)
+        }.value
         guard let window, window.isVisible else { return nil }
         let alert = NSAlert()
         alert.messageText = "A file named “\(target.lastPathComponent)” already exists."
         alert.informativeText = target.deletingLastPathComponent().path
+        if let preview {
+            alert.accessoryView = Self.previewView(for: preview)
+        }
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Keep Both")
         if !existing.isDirectory { alert.addButton(withTitle: "Replace") }
@@ -287,5 +302,37 @@ extension Viewer {
                 }
             }
         }
+    }
+
+    private nonisolated static func destinationPreview(at target: URL, existing: ExistingDestination) -> CGImage? {
+        guard !existing.isDirectory, ImageTransfer.existingDestination(at: target) == existing,
+              (try? FolderScanner.record(at: target, seed: UUID())) != nil else { return nil }
+
+        let resolved = target.resolvingSymlinksInPath()
+        let contents = ImageTransfer.existingDestination(at: resolved)
+        var preview = ImageDecoder.thumbnail(target, maxPixelSize: 384)?.image
+        if preview == nil, ["wbmp", "xbm", "xpm"].contains(target.pathExtension.lowercased()),
+           let image = ImageDecoder.decode(target)?.image {
+            preview = ImagePipeline.thumbnail(from: image)
+        }
+
+        guard ImageTransfer.existingDestination(at: target) == existing,
+              ImageTransfer.existingDestination(at: resolved) == contents else { return nil }
+        return preview
+    }
+
+    private static func previewView(for image: CGImage) -> NSView {
+        let preview = NSImageView(frame: CGRect(x: 0, y: 0, width: 192, height: 192))
+        preview.image = NSImage(cgImage: image, size: .zero)
+        preview.imageScaling = .scaleProportionallyUpOrDown
+        preview.imageAlignment = .alignLeft
+
+        let label = NSTextField(labelWithString: "Existing image")
+        label.frame = CGRect(x: 0, y: preview.frame.maxY + 6, width: preview.frame.width, height: 17)
+
+        let view = NSView(frame: CGRect(x: 0, y: 0, width: label.frame.width, height: label.frame.maxY))
+        view.addSubview(label)
+        view.addSubview(preview)
+        return view
     }
 }

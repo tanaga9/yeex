@@ -12,6 +12,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
     private let verticalCoverFlow = CoverFlowStrip(orientation: .vertical)
     private let root = NSStackView()
     private let body = NSStackView()
+    private let notifications = WindowNotifications()
     private let status = NSTextField(labelWithString: "")
     private let countStatus = NSTextField(labelWithString: "")
     private let rateStatus = NSTextField(labelWithString: "")
@@ -139,7 +140,24 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         root.addArrangedSubview(NSBox.separator())
         root.addArrangedSubview(footer)
         body.setContentHuggingPriority(.defaultLow, for: .vertical)
-        window.contentView = root
+        let content = NSView()
+        root.translatesAutoresizingMaskIntoConstraints = false
+        notifications.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(root)
+        content.addSubview(notifications, positioned: .above, relativeTo: root)
+        let preferredNotificationWidth = notifications.widthAnchor.constraint(equalToConstant: 288)
+        preferredNotificationWidth.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            root.topAnchor.constraint(equalTo: content.topAnchor),
+            root.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            root.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            notifications.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            notifications.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 12),
+            notifications.trailingAnchor.constraint(lessThanOrEqualTo: imageArea.trailingAnchor, constant: -12),
+            preferredNotificationWidth
+        ])
+        window.contentView = content
         window.initialFirstResponder = canvas
         updateStatus()
     }
@@ -700,6 +718,11 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         }
     }
 
+    func notify(_ title: String, detail: String) {
+        guard !isClosed else { return }
+        notifications.post(title, detail: detail)
+    }
+
     private func updateStatus() {
         countStatus.stringValue = "Count: \(catalog.count)"
         refreshToolbarItem(Self.watchToolbarIdentifier.rawValue)
@@ -714,6 +737,7 @@ final class Viewer: NSWindowController, NSWindowDelegate {
         cancel(&opening)
         cancel(&loadTask)
         cancel(&statusReset)
+        notifications.clear()
         pendingMetadata.withLock { $0 = nil }
         cancel(&metadataWorker)
         imageWork.end()

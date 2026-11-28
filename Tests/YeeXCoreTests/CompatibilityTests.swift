@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import ImageIO
 import os
@@ -149,6 +150,228 @@ func playbackRetainsTheOpenImageSource(ext: String) async throws {
         #expect(move.path == target.path)
         #expect(try Data(contentsOf: target) == original)
         #expect(!ImageTransfer.exists(source))
+    }
+}
+
+@Test(arguments: [TransferMode.copy, .move])
+func identicalTransfersKeepTheDestination(mode: TransferMode) throws {
+    try withTempDirectory { directory in
+        let output = directory.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let source = directory.appendingPathComponent("image.png")
+        let target = output.appendingPathComponent(source.lastPathComponent)
+        let trashed = directory.appendingPathComponent("trashed.png")
+        let contents = Data(repeating: 42, count: (1 << 20) + 1)
+        try contents.write(to: source)
+        try contents.write(to: target)
+        let record = try FolderScanner.record(at: source, seed: UUID())
+        let existing = try #require(ImageTransfer.existingDestination(at: target))
+        let trash = { (url: URL) in
+            #expect(url.lastPathComponent == source.lastPathComponent)
+            #expect(url != source)
+            #expect(!ImageTransfer.exists(source))
+            try FileManager.default.moveItem(at: url, to: trashed)
+            return trashed
+        }
+
+        let result = try ImageTransfer.resolveCollision(record: record, directory: output, mode: mode, trash: trash)
+
+        #expect(result == .identical(sourceTrashed: mode == .move))
+        #expect(ImageTransfer.exists(source) == (mode == .copy))
+        #expect(ImageTransfer.exists(trashed) == (mode == .move))
+        #expect(try Data(contentsOf: mode == .move ? trashed : source) == contents)
+        #expect(ImageTransfer.existingDestination(at: target) == existing)
+    }
+}
+
+@Test func duplicateMoveLeavesAReplacementAtTheSourcePathAlone() throws {
+    try withTempDirectory { directory in
+        let output = directory.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let source = directory.appendingPathComponent("image.png")
+        let target = output.appendingPathComponent(source.lastPathComponent)
+        let trashed = directory.appendingPathComponent("trashed.png")
+        let original = Data("original".utf8)
+        let replacement = Data("new file".utf8)
+        try original.write(to: source)
+        try original.write(to: target)
+        let record = try FolderScanner.record(at: source, seed: UUID())
+
+        let result = try ImageTransfer.resolveCollision(record: record, directory: output, mode: .move) { held in
+            try replacement.write(to: source)
+            try FileManager.default.moveItem(at: held, to: trashed)
+            return trashed
+        }
+
+        #expect(result == .identical(sourceTrashed: true))
+        #expect(try Data(contentsOf: source) == replacement)
+        #expect(try Data(contentsOf: trashed) == original)
+        #expect(try Data(contentsOf: target) == original)
+    }
+}
+
+@Test func duplicateMoveRejectsAnInPlaceSourceEditWithPreservedSizeAndModificationTime() throws {
+    try withTempDirectory { directory in
+        let output = directory.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let source = directory.appendingPathComponent("image.png")
+        let target = output.appendingPathComponent(source.lastPathComponent)
+        let edited = Data("after!".utf8)
+        try Data("before".utf8).write(to: source)
+        try edited.write(to: target)
+        let record = try FolderScanner.record(at: source, seed: UUID())
+        var info = stat()
+        try #require(lstat(source.path, &info) == 0)
+        let writer = try FileHandle(forWritingTo: source)
+        try writer.write(contentsOf: edited)
+        try writer.close()
+        try #require(utimensat(AT_FDCWD, source.path, [info.st_atimespec, info.st_mtimespec], 0) == 0)
+
+        do {
+            _ = try ImageTransfer.resolveCollision(record: record, directory: output, mode: .move) { _ in
+                Issue.record("An edited source should not be trashed")
+                throw CocoaError(.fileWriteUnknown)
+            }
+            Issue.record("The displayed source changed before resolving the collision")
+        } catch TransferError.sourceChanged {
+            #expect(try Data(contentsOf: source) == edited)
+            #expect(try Data(contentsOf: target) == edited)
+        }
+    }
+}
+
+@Test func copyToASymbolicLinkUsesTheNormalCollisionFlow() throws {
+    try withTempDirectory { directory in
+        let output = directory.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let source = directory.appendingPathComponent("image.png")
+        let target = output.appendingPathComponent(source.lastPathComponent)
+        let contents = Data("image".utf8)
+        try contents.write(to: source)
+        try FileManager.default.createSymbolicLink(at: target, withDestinationURL: source)
+        let record = try FolderScanner.record(at: source, seed: UUID())
+        let existing = try #require(ImageTransfer.existingDestination(at: target))
+
+        #expect(try ImageTransfer.resolveCollision(record: record, directory: output, mode: .copy) == .existing(existing))
+        let copy = try ImageTransfer.run(record: record, directory: output, mode: .copy, collision: .keepBoth)
+        try FileManager.default.removeItem(at: source)
+        #expect(try Data(contentsOf: copy) == contents)
+    }
+}
+
+@Test func replacementRejectsAnInPlaceEditThatPreservesSizeAndModificationTime() throws {
+    try withTempDirectory { directory in
+        let output = directory.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let source = directory.appendingPathComponent("image.png")
+        let target = output.appendingPathComponent(source.lastPathComponent)
+        let edited = Data("after!".utf8)
+        try Data("source".utf8).write(to: source)
+        try Data("before".utf8).write(to: target)
+        let expected = try #require(ImageTransfer.existingDestination(at: target))
+        var info = stat()
+        try #require(lstat(target.path, &info) == 0)
+        let writer = try FileHandle(forWritingTo: target)
+        try writer.write(contentsOf: edited)
+        try writer.close()
+        try #require(utimensat(AT_FDCWD, target.path, [info.st_atimespec, info.st_mtimespec], 0) == 0)
+
+        do {
+            _ = try ImageTransfer.run(source: source, directory: output, mode: .copy, collision: .replace(expected))
+            Issue.record("The confirmed destination changed before Replace")
+        } catch TransferError.destinationChanged {
+            #expect(try Data(contentsOf: target) == edited)
+        }
+    }
+}
+
+@Test(arguments: ["image.png", "Image.png"])
+func differentNameOrContentsAreNotTreatedAsIdentical(destinationName: String) throws {
+    try withTempDirectory { directory in
+        let output = directory.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let source = directory.appendingPathComponent("image.png")
+        let target = output.appendingPathComponent(destinationName)
+        let contents = Data("before".utf8)
+        try contents.write(to: source)
+        try (destinationName == source.lastPathComponent ? Data("after!".utf8) : contents).write(to: target)
+        let record = try FolderScanner.record(at: source, seed: UUID())
+        let existing = ImageTransfer.existingDestination(at: output.appendingPathComponent(source.lastPathComponent))
+
+        let result = try ImageTransfer.resolveCollision(record: record, directory: output, mode: .move) { _ in
+            Issue.record("A file with different contents should not be trashed")
+            throw CocoaError(.fileWriteUnknown)
+        }
+
+        #expect(result == (existing.map(TransferCollision.existing) ?? .none))
+        #expect(ImageTransfer.exists(source))
+    }
+}
+
+@Test func duplicateMovePreservesTheSourceOnTrashFailureOrSameFile() throws {
+    try withTempDirectory { directory in
+        let output = directory.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let source = directory.appendingPathComponent("image.png")
+        let target = output.appendingPathComponent(source.lastPathComponent)
+        let contents = Data("image".utf8)
+        try contents.write(to: source)
+        try contents.write(to: target)
+        let record = try FolderScanner.record(at: source, seed: UUID())
+
+        let sameFile = try ImageTransfer.resolveCollision(record: record, directory: directory, mode: .move) { _ in
+            Issue.record("Moving a file to itself should not trash it")
+            throw CocoaError(.fileWriteUnknown)
+        }
+        #expect(sameFile == .identical(sourceTrashed: false))
+
+        #expect(throws: CocoaError.self) {
+            try ImageTransfer.resolveCollision(record: record, directory: output, mode: .move) { _ in
+                throw CocoaError(.fileWriteNoPermission)
+            }
+        }
+        #expect(try Data(contentsOf: source) == contents)
+        #expect(try Data(contentsOf: target) == contents)
+    }
+}
+
+@Test(arguments: [false, true])
+func duplicateMoveRecoversWhenDestinationChangesDuringTrash(sourceRecreated: Bool) throws {
+    try withTempDirectory { directory in
+        let output = directory.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: false)
+        let source = directory.appendingPathComponent("image.png")
+        let target = output.appendingPathComponent(source.lastPathComponent)
+        let trashed = directory.appendingPathComponent("trashed.png")
+        let original = Data("original".utf8)
+        let replacement = Data("new file".utf8)
+        try original.write(to: source)
+        try original.write(to: target)
+        let record = try FolderScanner.record(at: source, seed: UUID())
+
+        do {
+            _ = try ImageTransfer.resolveCollision(record: record, directory: output, mode: .move) { url in
+                try FileManager.default.moveItem(at: url, to: trashed)
+                try replacement.write(to: target, options: .atomic)
+                if sourceRecreated { try replacement.write(to: source) }
+                return trashed
+            }
+            Issue.record("A duplicate move should fail if the destination changes while moving the source to Trash")
+        } catch TransferError.destinationChanged {
+            #expect(!sourceRecreated)
+            #expect(try Data(contentsOf: source) == original)
+            #expect(!ImageTransfer.exists(trashed))
+        } catch TransferError.recoveryRequired(let retained, let error) {
+            #expect(sourceRecreated)
+            guard case .destinationChanged? = error as? TransferError else {
+                Issue.record("Expected a destination change, got \(error)")
+                return
+            }
+            #expect(retained == trashed)
+            #expect(try Data(contentsOf: source) == replacement)
+            #expect(try Data(contentsOf: retained) == original)
+        }
+        #expect(try Data(contentsOf: target) == replacement)
     }
 }
 
